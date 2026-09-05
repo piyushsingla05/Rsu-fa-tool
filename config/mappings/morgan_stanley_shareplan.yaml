@@ -1,0 +1,65 @@
+id: morgan_stanley_shareplan
+label: Morgan Stanley at Work - Share Savings Plan account summary
+broker: MORGAN_STANLEY
+document_type: BROKER_STATEMENT
+
+match:
+  file_kind: [pdf]
+  all_text: ["summary of stock/shares holdings"]
+  any_text: ["long share savings plan", "morgan stanley", "type of money", "release ("]
+  filename_hint: ["morgan"]
+  min_score: 0.6
+
+# The statement is a laid-out PDF, so sections are carved out by marker and one
+# regex per row. Named groups become the table's columns.
+layout:
+  kind: pdf_sections
+  sections:
+    # Lot-wise holdings as at the statement's own as-of date. Used to reconcile
+    # the replayed activity, not as the transaction source.
+    - name: holdings
+      role: holdings
+      start_after: "Summary of Stock/Shares Holdings"
+      end_before: "Activity"
+      row_regex: '^(?P<ticker>[A-Z]{1,6})\s*-\s+(?P<acquired>\d{2}-\w{3}-\d{4})\s+(?:\d{2}-\w{3}-\d{4}\s+)?(?P<lot>\d+)\s+(?P<term>Long|Short)\s+\$(?P<gain>-?[\d,]+\.?\d*)\s*USD\s+\$(?P<cost_total>-?[\d,]+\.?\d*)\s*USD\s+\$(?P<cost_per_share>-?[\d,]+\.?\d*)\s*USD\s+(?P<shares>[\d,]+)\s+\$(?P<price>-?[\d,]+\.?\d*)\s*USD\s+\$(?P<value>-?[\d,]+\.?\d*)\s*USD'
+
+    # Full transaction history. Begins at an explicit "Opening Value 0", so the
+    # holding can be replayed to any date in the period.
+    - name: activity
+      role: transactions
+      start_after: "Activity"
+      row_regex: '^\s*(?P<date>\d{2}-\w{3}-\d{4})\s+(?P<activity>Release \([A-Z0-9]+\)|Sale|Stock Split|Opening Value|Transfer[A-Za-z ]*|Dividend[A-Za-z ]*)\s+(?P<rest>.*)$'
+
+identity:
+  account: "Account Number"
+  plan: "Company"
+
+rules:
+  symbol_from_text:
+    amazon: AMZN
+    amzn: AMZN
+
+  # Money on an activity line appears in statement column order. A Release
+  # carries only Book Value; a Sale carries Share Price then Book Value.
+  # Book Value on a Sale is the actual cost the broker removed, which is far
+  # better evidence than a FIFO guess.
+  money_semantics:
+    1: [book_value]
+    2: [price, book_value]
+
+  activity_event_map:
+    "Release": VEST
+    "Sale": SELL
+    "Stock Split": SPLIT
+    "Opening Value": SKIP
+    "Transfer In": TRANSFER_IN
+    "Transfer Out": TRANSFER_OUT
+    "Dividend": DIV
+
+  # Morgan Stanley reports a split as ADDITIONAL shares against each open lot,
+  # not as a ratio. Summing a day's split rows and dividing by the holding at
+  # that date recovers the true ratio, which is what the engine's SPLIT expects.
+  # Fed in raw, "+418 shares" would be read as a 418:1 split.
+  split_style: additive
+
+  plan_type: RSU

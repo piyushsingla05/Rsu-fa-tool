@@ -1,0 +1,37 @@
+id: schwab_year_end_summary
+label: Charles Schwab - Year-End Summary, realised gain or (loss)
+broker: SCHWAB
+document_type: TRANSACTION_SUMMARY
+
+match:
+  file_kind: [pdf]
+  all_text: ["year-end summary"]
+  any_text: ["realized gain or (loss)", "short-term realized", "date acquired"]
+  filename_hint: ["year-end summary"]
+  min_score: 0.6
+
+layout:
+  kind: pdf_sections
+  sections:
+    # A 1099-B style realised gain/loss table is a COMPLETE closed-lot record:
+    # quantity, date acquired, date sold, proceeds and cost basis. No FIFO
+    # inference is needed, and the holding period is stated rather than guessed.
+    - name: realised_gains
+      role: closed_lot_gains
+      start_after: "Realized Gain or (Loss)"
+      row_regex: '^(?P<name>[A-Z][A-Za-z .,&''-]+?)\s{2,}(?P<cusip>[0-9A-Z]{9})\s+(?P<qty>[\d,]+\.\d{2})\s+(?P<acquired>\d{2}/\d{2}/\d{2})\s+(?P<sold>\d{2}/\d{2}/\d{2})\s+\$\s*(?P<proceeds>[\d,]+\.\d{2})\s+\$\s*(?P<cost>[\d,]+\.\d{2})'
+      date_format: "%m/%d/%y"
+
+identity:
+  # Schwab prints "Account Number" as a column heading with the value on the
+  # following line, so the number is matched by its own shape instead.
+  account_regex: '(?P<account>\d{4}-\d{4})'
+  account: "Account Number"
+
+rules:
+  plan_type: RSU
+  # Realised gain/loss only. It carries no dividend income, so it must not be
+  # treated as dividend coverage for the period.
+  reports_dividends: false
+  symbol_from_text:
+    broadcom: AVGO

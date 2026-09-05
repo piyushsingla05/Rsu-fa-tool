@@ -1,0 +1,52 @@
+id: ubs_form_1042s
+label: UBS Form 1042-S with dated payment detail
+broker: UBS
+document_type: BROKER_STATEMENT
+
+# Deliberately NOT typed FORM_1042S. A 1042-S normally carries only annual
+# totals, so the engine converts it in aggregate at the period-end rate. This
+# one prints a Detail schedule with the DATE of every payment, which is better
+# evidence: each dividend converts at its own payment date. The form face stays
+# as a control total.
+match:
+  file_kind: [pdf]
+  all_text:
+    - "foreign person's u.s. source income"
+    - "ubs financial services"
+  any_text:
+    - "dividends paid by u.s. corporations"
+    - "security description and cusip number"
+    - "1042-s"
+  min_score: 0.7
+
+layout:
+  kind: pdf_sections
+  sections:
+    # One row per payment: date, gross, federal tax withheld.
+    - name: dividend_detail
+      role: dividends_dated
+      start_after: "Security description and CUSIP number"
+      end_before: "U.S. Income Tax Filing Requirements"
+      row_regex: '^\s*(?P<date>\d{2}-\d{2}-\d{4})\s+(?P<gross>[\d,]+\.\d{2})\s+(?P<tax>[\d,]+\.\d{2})'
+
+    # The form's own subtotal, checked against the sum of the detail rows.
+    - name: dividend_control
+      role: dividend_control_total
+      start_after: "Security description and CUSIP number"
+      end_before: "U.S. Income Tax Filing Requirements"
+      row_regex: '^\s*Subtotal\s+(?P<gross>[\d,]+\.\d{2})\s+(?P<tax>[\d,]+\.\d{2})'
+
+identity:
+  account_regex: 'Account Number:\s*(?P<account>FA\s+\w+)'
+
+rules:
+  date_format: "%m-%d-%Y"
+  symbol_from_text:
+    texas instruments: TXN
+  reports_dividends: true
+  # The detail rows carry payment dates, so no aggregate period-end conversion
+  # is needed or wanted here.
+  dividend_dates_stated: true
+  # A 1042-S is an annual form: it covers the whole calendar year.
+  annual_form: true
+  reconcile_tolerance: 0.02

@@ -1,0 +1,56 @@
+# ============================================================================
+# RSU / Schedule FA tool - .gitignore
+#
+# This repository is source code and configuration ONLY. Real client data -
+# uploaded broker statements, generated client working papers, and anything
+# derived from them - must never be committed, even to a private repository.
+#
+# See claude/rsu-fa-github-privacy-review.md (project docs) for the full
+# privacy audit this file implements.
+# ============================================================================
+
+# --- Client data: never commit -------------------------------------------
+# Per-client account/entity registers, real names, real account numbers.
+/clients/
+# Uploaded broker statements (PDF/XLSX/CSV) - the source documents themselves.
+/uploads/
+# Generated Schedule FA workbooks - completed client deliverables.
+/output/
+# Job workspaces (web UI runs, acceptance-harness runs) - copies of the above.
+/work/
+
+# --- Sensitive test fixtures: real client tax data ------------------------
+# Confirmed real client data (UBS account, address, entity, actual rupee
+# figures) captured for the acceptance harness. Digest c6acdbbd43aeda76 is
+# recorded in claude/rsu-fa-freeze-record.md; this file itself must stay off
+# GitHub and must not be regenerated to "fix" this ignore rule.
+tests/fixtures/acceptance_baseline.json
+# Real Grant Number / Order Number values tied to an actual person's vest
+# history, inside a binary workbook fixture that cannot be redacted without
+# risking the byte-for-byte parsing test it supports.
+tests/fixtures/etrade_GL_Expanded_INTC.xlsx
+
+# --- Licensed / preparer-supplied FX tables --------------------------------
+# FBIL is licensed benchmark data (End-Users Licence, fee-liable) and is only
+# ever preparer-supplied, never auto-fetched. ECB and Google Finance tables
+# populated from real historical data are working files, not source code.
+config/fx_fbil.csv
+config/fx_ecb.csv
+config/fx_google_finance.csv
+
+# --- Python / build artifacts ----------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / editor cruft -------------------------------------------------------
+.DS_Store
+*.swp
+*~
+
+# --- Ad hoc scratch output the engine/tests write at the repo root ---------
+/*.xlsx

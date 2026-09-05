@@ -1,0 +1,26 @@
+id: fidelity_form_1042s
+label: Form 1042-S - Foreign Person's U.S. Source Income Subject to Withholding
+broker: FIDELITY
+document_type: FORM_1042S
+
+match:
+  file_kind: [pdf]
+  all_text: ["form 1042-s"]
+  any_text: ["foreign person", "federal tax withheld", "chapter indicator",
+             "exemption code"]
+  min_score: 0.6
+
+layout:
+  kind: pdf_sections
+  sections:
+    - name: boxes
+      role: form_1042s
+      payer: "Fidelity Stock Plan Services"
+      row_regex: '(?:^\s*(?P<code>\d{2})\s+(?P<gross>[\d,]+\.\d{2})\s+3a Exemption code)|(?:^7a Federal tax withheld\s+(?P<tax>[\d,]+\.\d{2}))'
+
+identity:
+  account_regex: "Recipient's account number\\s*(?P<account>[A-Z0-9-]+)"
+
+rules:
+  plan_type: RSU
+  reports_dividends: false

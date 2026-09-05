@@ -1,0 +1,33 @@
+id: computershare_portfolio
+label: Computershare Plan Managers - Portfolio details export
+broker: COMPUTERSHARE
+document_type: PORTFOLIO_HOLDINGS
+
+# A portfolio-details Excel is a PRIMARY source for FA-A3, not a supporting file.
+match:
+  file_kind: [excel]
+  all_text: ["allocation date"]
+  any_text: ["outstanding quantity", "allocated quantity", "contribution type"]
+  filename_hint: ["portfoliodetails", "portfolio details"]
+  min_score: 0.6
+
+layout:
+  kind: excel_table
+  header_contains: "allocation date"
+
+fields:
+  acquired_date: ["allocation date"]
+  quantity: ["outstanding quantity", "allocated quantity"]
+  price_fc: ["strike price / cost basis", "cost basis"]
+  security_name: ["instrument"]
+  plan: ["plan"]
+
+identity:
+  participant: "participant name"
+  account: "user id"
+
+rules:
+  symbol_from_text:
+    ibm: IBM
+  event_from_text:
+    default: BUY

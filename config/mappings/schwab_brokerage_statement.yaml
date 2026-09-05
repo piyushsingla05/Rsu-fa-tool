@@ -1,0 +1,71 @@
+id: schwab_brokerage_statement
+label: Charles Schwab One International - monthly brokerage statement
+broker: SCHWAB
+document_type: BROKER_STATEMENT
+
+match:
+  file_kind: [pdf]
+  all_text: ["schwab one"]
+  any_text: ["positions - equities", "cash and cash investments",
+             "transaction details", "statement period"]
+  filename_hint: ["brokerage statement"]
+  min_score: 0.6
+
+layout:
+  kind: pdf_sections
+  sections:
+    # A stated position is source-priority 1 for the period-end holding. It is a
+    # STATE, not a transaction - the engine keeps only the latest one on or
+    # before the period end.
+    - name: positions
+      role: holdings_as_acquisition
+      start_after: "Positions - Equities"
+      end_before: "Total Equities"
+      row_regex: '^(?P<ticker>[A-Z]{2,6})\s{2,}(?P<name>[A-Z][A-Za-z .,&''-]+?)\s{2,}(?P<shares>[\d,]+\.\d{4})\s+(?P<price>[\d,]+\.\d{2,5})\s+(?P<market_value>[\d,]+\.\d{2})\s+(?P<cost_total>[\d,]+\.\d{2})'
+
+    - name: cash
+      role: cash
+      start_after: "Cash and Cash Investments"
+      end_before: "Total Cash and Cash Investments"
+      row_regex: '^Cash\s+,\s+(?P<beginning>[\d,]+\.\d{2})\s+(?P<ending>[\d,]+\.\d{2})'
+
+    # Schwab prints the withholding on the dated line and the gross dividend on
+    # an undated continuation line. The date carries forward; the two lines are
+    # paired on (date, ticker).
+    - name: dividends
+      role: dividends
+      start_after: "Transaction Details"
+      row_regex: '^\s*(?P<date>\d{2}/\d{2})?\s*Dividend\s+(?P<action>NRA Tax|Qual\. Dividend|Cash Dividend|Special Dividend)\s+(?P<ticker>[A-Z]{2,6})\s+(?P<name>[A-Z][A-Za-z .,&''-]+?)\s+\(?(?P<amount>[\d,]+\.\d{2})\)?\s*$'
+      carry_forward: [date]
+      date_format: "%m/%d"
+      date_year_from: period_end
+      action_map:
+        "NRA Tax": tax
+        "Qual. Dividend": gross
+        "Cash Dividend": gross
+        "Special Dividend": gross
+
+    # Shares arriving in the account from the plan administrator. Schwab groups
+    # these under "Other Activity", which its own notes describe as transactions
+    # that do not affect cash, "such as stock transfers". They are recorded as
+    # EVIDENCE for the cross-broker reconciliation, never as acquisitions - the
+    # stated position already includes them.
+    - name: transfers_in
+      role: transfers
+      direction: IN
+      start_after: "Transaction Details"
+      row_regex: '^\s*(?P<date>\d{2}/\d{2})?\s*(?:Other\s+)?StockPlanActivity\s+(?P<ticker>[A-Z]{2,6})\s+(?P<name>[A-Z][A-Za-z .,&''-]+?)\s+(?P<qty>[\d,]+\.\d{4})\s+(?P<amount>[\d,]+\.\d{2})'
+      carry_forward: [date]
+      date_format: "%m/%d"
+      date_year_from: period_end
+
+identity:
+  # Schwab prints "Account Number" as a column heading with the value on the
+  # following line, so the number is matched by its own shape instead.
+  account_regex: '(?P<account>\d{4}-\d{4})'
+  account: "Account Number"
+
+rules:
+  plan_type: RSU
+  symbol_from_text:
+    broadcom: AVGO

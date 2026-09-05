@@ -1,0 +1,75 @@
+id: etrade_client_statement
+label: E*TRADE (Morgan Stanley at Work) - quarterly client statement
+broker: ETRADE
+document_type: BROKER_STATEMENT
+
+match:
+  file_kind: [pdf]
+  all_text: ["client statement"]
+  any_text: ["e*trade", "morgan stanley at work", "cash flow activity by date",
+             "unsettled purchases/sales activity", "holdings"]
+  filename_hint: ["etrade", "clientstatements"]
+  min_score: 0.6
+
+layout:
+  kind: pdf_sections
+  sections:
+    # Holdings are stated on a TRADE-date basis, so the quantity is already net
+    # of a sale traded in the period but settling after it. Column order differs
+    # from Schwab: quantity, price, TOTAL COST, then market value.
+    - name: positions
+      role: holdings_as_acquisition
+      start_after: "COMMON STOCKS"
+      end_before: "STOCKS"
+      row_regex: '^(?P<name>[A-Z][A-Za-z .,&''-]+?)\s*\((?P<ticker>[A-Z]{1,6})\)\s+(?P<shares>[\d,]+\.\d{1,4})\s+\$(?P<price>[\d,]+\.\d{2,4})\s+\$(?P<cost_total>[\d,]+\.\d{2})\s+\$(?P<market_value>[\d,]+\.\d{2})'
+
+    # Actual cash. The projected settled balance also on the statement includes
+    # unsettled sale proceeds pending payment TO THE COMPANY, which are not the
+    # client's cash and must not be reported as a custodial balance.
+    - name: cash
+      role: cash
+      start_after: "CASH, BANK DEPOSIT PROGRAM AND MONEY MARKET FUNDS"
+      row_regex: '^CASH, BDP, AND MMFs\s+\$?(?P<ending>[\d,]+\.\d{2})'
+
+    # Gross dividend and withholding are separate dated rows in the activity
+    # table, paired on (date, security).
+    - name: dividends
+      role: dividends
+      start_after: "CASH FLOW ACTIVITY BY DATE"
+      row_regex: '^(?P<date>\d{1,2}/\d{1,2})?\s+(?P<action>Qualified Dividend|Cash Dividend|Non-Qualified Dividend|Tax Withholding)\s+(?P<name>[A-Z][A-Za-z .,&''-]+?)\s+\(?\$?(?P<amount>[\d,]+\.\d{2})\)?\s*$'
+      carry_forward: [date]
+      date_format: "%m/%d"
+      date_year_from: period_end
+      action_map:
+        "Qualified Dividend": gross
+        "Cash Dividend": gross
+        "Non-Qualified Dividend": gross
+        "Tax Withholding": tax
+
+    # Sales appear with quantity and price but NO lot cost - E*TRADE directs the
+    # reader online for tax-lot detail. Cost therefore comes from the stated
+    # realised gain below, and the acquisition date is genuinely unavailable.
+    - name: sales
+      role: sales
+      start_after: "CASH FLOW ACTIVITY BY DATE"
+      end_before: "UNSETTLED PURCHASES/SALES ACTIVITY"
+      row_regex: '^(?P<date>\d{1,2}/\d{1,2})\s+\d{1,2}/\d{1,2}\s+Sold\s+(?P<name>[A-Z][A-Za-z .,&''-]+?)\s+ACTED AS AGENT\s+(?P<qty>[\d,]+\.\d{1,3})\s+(?P<price>[\d,]+\.\d{2,4})\s+(?P<amount>[\d,]+\.\d{2})'
+      date_format: "%m/%d"
+      date_year_from: period_end
+
+    - name: realized_gain
+      role: realized_gain_summary
+      start_after: "GAIN/(LOSS) SUMMARY"
+      row_regex: '(?P<label>Long-Term|Short-Term) Gain\s+\$?(?P<period>[\d,()-]+\.\d{2})\s+\$?(?P<year>[\d,()-]+\.\d{2})'
+
+identity:
+  account_regex: '(?P<account>\d{3}-\d{6}-\d{3})'
+
+rules:
+  plan_type: RSU
+  # Proceeds and realised gain are both stated; their difference is the cost.
+  # The broker's Long-Term label is its US classification and is NOT carried
+  # into the Indian holding-period test.
+  derive_cost_from_realized_gain: true
+  symbol_from_text:
+    qualcomm: QCOM

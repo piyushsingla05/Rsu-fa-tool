@@ -1,0 +1,17 @@
+ticker,security_name,exchange,price_kind,price,price_date,currency,basis,source_type,source_name,retrieved_on,confidence,verified,notes
+AVGO,Broadcom Inc,NASDAQ,PERIOD_END_CLOSE,346.10,2025-12-31,USD,DAILY_CLOSE_HIGH,BROKER_STATEMENT,Schwab Brokerage Statement 31-12-2025 (Positions - Equities),2026-09-04,High,Y,Price stated on the client's own statement
+AVGO,Broadcom Inc,NASDAQ,ANNUAL_HIGH,346.10,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close only - true annual high not yet sourced
+IBM,International Business Machines Corp,NYSE,PERIOD_END_CLOSE,296.21,2025-12-31,USD,DAILY_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Medium,N,Month-end close for Dec 2025
+IBM,International Business Machines Corp,NYSE,ANNUAL_HIGH,308.58,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close (Nov 2025) - true annual high not yet sourced
+MSFT,Microsoft Corp,NASDAQ,PERIOD_END_CLOSE,483.62,2025-12-31,USD,DAILY_CLOSE_HIGH,BROKER_STATEMENT,Fidelity SPS Report Q4-2025 (Price Per Unit),2026-09-04,High,Y,Stated on the client's own statement; digrin agrees exactly
+MSFT,Microsoft Corp,NASDAQ,ANNUAL_HIGH,533.50,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close (Jul 2025) - true annual high not yet sourced
+AMZN,Amazon.com Inc,NASDAQ,PERIOD_END_CLOSE,230.82,2025-12-31,USD,DAILY_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Medium,N,Month-end close for Dec 2025
+AMZN,Amazon.com Inc,NASDAQ,ANNUAL_HIGH,244.22,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close (Oct 2025) - true annual high not yet sourced
+TXN,Texas Instruments Inc,NASDAQ,PERIOD_END_CLOSE,173.49,2025-12-31,USD,DAILY_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Medium,N,Month-end close for Dec 2025
+TXN,Texas Instruments Inc,NASDAQ,ANNUAL_HIGH,207.62,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close (Jun 2025) - true annual high not yet sourced
+QCOM,QUALCOMM Inc,NASDAQ,PERIOD_END_CLOSE,171.05,2025-12-31,USD,DAILY_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Medium,N,Mar-2025 close from this source ties exactly to the E*TRADE statement
+QCOM,QUALCOMM Inc,NASDAQ,ANNUAL_HIGH,180.90,2025-12-31,USD,MONTH_END_CLOSE_HIGH,SECONDARY,digrin.com month-end series,2026-09-04,Low,N,Highest month-end close (Oct 2025) - true annual high not yet sourced
+IBM,International Business Machines Corp,NYSE,PERIOD_END_CLOSE,242.39,2026-03-31,USD,DAILY_CLOSE_HIGH,MANUAL,Client Computershare working file,2026-09-04,Medium,N,Used to reproduce the client's own FY working for validation
+IBM,International Business Machines Corp,NYSE,ANNUAL_HIGH,324.90,2026-03-31,USD,CLIENT_WORKING_FILE,MANUAL,Client Computershare working file,2026-09-04,Medium,N,Used to reproduce the client's own FY working for validation
+NVDA,NVIDIA Corp,NASDAQ,PERIOD_END_CLOSE,182.55,2025-12-31,USD,DAILY_CLOSE_HIGH,MANUAL,Placeholder pending verification,2026-09-04,Low,N,PLACEHOLDER - must be replaced
+NVDA,NVIDIA Corp,NASDAQ,ANNUAL_HIGH,207.04,2025-12-31,USD,MONTH_END_CLOSE_HIGH,MANUAL,Placeholder pending verification,2026-09-04,Low,N,PLACEHOLDER - must be replaced

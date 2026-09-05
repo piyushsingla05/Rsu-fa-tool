@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workbench</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<!-- sign in -->
+<section id="login" class="card login" hidden>
+  <h2 id="loginapp">Sign in</h2>
+  <p class="sub">These tools hold client documents. There is no anonymous access.</p>
+  <form id="loginform">
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+  <div id="loginerr"></div>
+</section>
+
+<!-- application shell -->
+<div class="shell" id="shell" hidden>
+
+  <aside class="side">
+    <div class="brand">
+      <span class="mark"></span>
+      <span id="appname">Workbench</span>
+    </div>
+    <nav id="nav"></nav>
+    <div class="sidefoot">
+      <div id="sidemeta"></div>
+      <button class="linkish" id="signout" type="button">Sign out</button>
+    </div>
+  </aside>
+
+  <div class="body">
+    <header class="bar">
+      <div>
+        <div class="crumb" id="crumb"></div>
+        <div class="title" id="ptitle"></div>
+      </div>
+      <span class="sp"></span>
+      <div class="barmeta" id="barmeta"></div>
+    </header>
+    <main id="panel"></main>
+  </div>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

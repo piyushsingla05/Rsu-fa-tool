@@ -1,0 +1,91 @@
+id: ubs_investment_account
+label: UBS Financial Services - Investment Account (Company Sponsored Stock Plan)
+broker: UBS
+document_type: BROKER_STATEMENT
+
+match:
+  file_kind: [pdf]
+  all_text:
+    - "ubs financial services"
+  any_text:
+    - "company sponsored stock plan"
+    - "company sponsored equity compensation plan"
+    - "your company sponsored equity compensation plan(s)"
+    - "investment account"
+  min_score: 0.7
+
+layout:
+  kind: pdf_sections
+
+  # UBS delivers SEVERAL monthly statements in one download - five per file here.
+  # This marks where each one begins so a row is tagged with the statement it
+  # belongs to rather than with whatever period the file as a whole covers.
+  statement_boundary: '^\s{6,}(?P<stmt_month>January|February|March|April|May|June|July|August|September|October|November|December)\s+(?P<stmt_year>20\d{2})\s*$'
+  # "on Aug 29 ($)" / "on December 31 ($)" - the date that statement's balances
+  # and holdings are struck at. Not always the month end.
+  as_at_regex: '\bon\s+(?P<asat_month>[A-Z][a-z]{2,8})\s+(?P<asat_day>\d{1,2})\s*\(\$\)'
+
+  sections:
+    # ---- lot-level holdings: trade date, quantity, cost and period-end price ----
+    - name: holdings
+      role: holdings_as_acquisition
+      start_after: "Common stock"
+      end_before: "Your total assets"
+      repeat_sections: true
+      row_regex: '(?P<acquired>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<shares>[\d,]+\.\d{3})\s+(?P<cost_per_share>[\d,]+\.\d{3})\s+(?P<cost_total>[\d,]+\.\d{2})\s+(?P<price>[\d,]+\.\d{3})\s+(?P<value>[\d,]+\.\d{2})\s+(?P<unrealised>-?[\d,]+\.\d{2})\s+(?P<term>ST|LT)\b'
+
+    # ---- custodial cash, for FA-A2 ----
+    - name: cash
+      role: cash
+      start_after: "Cash and money balances"
+      end_before: "Your total assets"
+      repeat_sections: true
+      row_regex: '^Cash\s+(?P<opening>-?[\d,]+\.\d{2})\s+(?P<balance>-?[\d,]+\.\d{2})\s*$'
+
+    # ---- closed-lot realised gains: a complete record, no FIFO inference ----
+    - name: realised_gains
+      role: closed_lot_gains
+      start_after: "Short-term capital gains and losses"
+      end_before: "Company sponsored stock plan(s) - Realized gains"
+      repeat_sections: true
+      row_regex: '\b(?P<method>VSP|FIFO)\s+(?P<qty>-?[\d,]+\.\d{3})\s+(?P<acquired>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<sold>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<proceeds>[\d,]+\.\d{2})\s+(?P<cost>[\d,]+\.\d{2})\s+(?P<gain>-?[\d,]+\.\d{2})\s*$'
+
+    # ---- stock option exercises: the perquisite, stated by UBS itself ----
+    # UBS prints BOTH the option cost and the value at the time of exercise. The
+    # difference is ordinary income already taxed as a perquisite, so the value
+    # at exercise - not the option cost - is the cost of acquisition for Indian
+    # capital gains. See rules.exercise_fmv_is_cost below.
+    - name: option_exercises
+      role: option_exercises
+      start_after: "Company sponsored stock plan(s) - Realized gains"
+      end_before: "End of statement"
+      repeat_sections: true
+      row_regex: '(?P<grant_no>INQ\d{6,})\s+(?P<grant_date>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<exercise_date>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<qty>[\d,]+)\s+Exercise\s+(?P<option_cost>[\d,]+\.\d{2})\s+(?P<fmv_total>[\d,]+\.\d{2})\s+(?P<realized>-?[\d,]+\.\d{2})'
+
+    # ---- unvested awards: disclosed, never treated as a holding ----
+    - name: unvested_awards
+      role: unvested_awards
+      start_after: "Restricted awards/units"
+      end_before: "Account activity this month"
+      repeat_sections: true
+      row_regex: '(?P<award_no>TIN\d{6,})\s+(?P<award_date>[A-Z][a-z]{2}\s+\d{1,2},\s*\d{2})\s+(?P<plan>RSU|PSU|RSA)\s+(?P<granted>[\d,]+)\s+(?P<vested>[\d,]+)\s+(?P<pending>[\d,]+)\s+(?P<unvested>[\d,]+)\s+(?P<pending_value>[\d,]+\.\d{2})\s+(?P<unvested_value>[\d,]+\.\d{2})'
+
+identity:
+  account_regex: 'Account number:\s*(?P<account>FA\s+\w+(?:\s+\w+)?)'
+
+rules:
+  plan_type: "RSU/ESPP/NQO"
+  symbol_from_text:
+    texas instruments: TXN
+  # UBS states holdings lot by lot with each lot's own trade date, so the A3
+  # initial value converts at the real acquisition date rather than at the
+  # period end.
+  position_carries_lot_date: true
+  # The statement's own realised gain/loss tables are the capital-gains source
+  # of record for the dates they cover.
+  capital_gains_authority: true
+  # Where a disposal comes from an option exercise, replace the broker's option
+  # cost with the value at the time of exercise. The difference is the
+  # perquisite, taxed as salary, and must not be taxed again as capital gain.
+  exercise_fmv_is_cost: true
+  reconcile_tolerance: 0.02

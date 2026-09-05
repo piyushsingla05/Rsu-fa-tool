@@ -1,0 +1,61 @@
+id: etrade_gl_expanded
+label: E*TRADE Gains & Losses Expanded
+broker: ETRADE
+document_type: TRANSACTION_SUMMARY
+
+# Detection is on the FORMAT, not on a client or a security. Any E*TRADE G&L
+# Expanded export carries these column headings, so a future statement for any
+# ticker routes through the same adjusted-capital-gains logic automatically.
+match:
+  file_kind: [excel, csv]
+  all_text:
+    - "adjusted cost basis"
+    - "adjusted gain/loss"
+  any_text:
+    - "record type"
+    - "ordinary income recognized"
+    - "capital gains status"
+    - "total proceeds"
+    - "date acquired"
+  filename_hint: ["gl_expanded", "g&l", "gains_losses", "gainsandlosses"]
+  min_score: 0.75
+
+layout:
+  kind: tabular
+  table_role: closed_lot_gains
+  # "Sell" lines are the transactions. The "Summary" line is a control total the
+  # engine checks itself against - it is never read as a disposal.
+  row_filter:
+    column: "Record Type"
+    values: ["Sell"]
+  control_row:
+    column: "Record Type"
+    values: ["Summary"]
+
+# Only the columns the methodology uses. Adjusted Cost Basis and Adjusted
+# Gain/Loss are the authoritative pair; the ordinary Gain/Loss column is mapped
+# ONLY so it can be shown as supporting reconciliation data.
+fields:
+  symbol: ["Symbol"]
+  quantity: ["Quantity"]
+  acquired_date: ["Date Acquired"]
+  sale_date: ["Date Sold"]
+  proceeds_fc: ["Total Proceeds"]
+  cost_fc: ["Adjusted Cost Basis"]          # AUTHORITATIVE cost of acquisition
+  gain_fc: ["Adjusted Gain/Loss"]           # AUTHORITATIVE capital gain
+  ordinary_gain_fc: ["Gain/Loss"]           # supporting only - see below
+  ordinary_income_fc: ["Ordinary Income Recognized"]
+
+rules:
+  # Why the adjusted columns and not the plain ones: for an equity plan the
+  # ordinary "Gain/Loss" is proceeds less the ACQUISITION cost only. It therefore
+  # still contains the ordinary income recognised on vest or purchase - income
+  # already taxed as a perquisite. "Adjusted Cost Basis" adds that income back
+  # into cost, which is the cost the employee actually bore, so "Adjusted
+  # Gain/Loss" is the capital gain. Using the ordinary column would tax the
+  # perquisite a second time.
+  capital_gains_authority: true
+  reconcile_tolerance: 0.01
+  # A realised gain/loss report carries no dividend income, so it must not be
+  # treated as covering the period for the dividend precedence test.
+  reports_dividends: false

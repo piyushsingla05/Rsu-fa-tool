@@ -1,0 +1,34 @@
+id: fidelity_sps_report
+label: Fidelity Stock Plan Services - quarterly account report
+broker: FIDELITY
+document_type: BROKER_STATEMENT
+
+match:
+  file_kind: [pdf]
+  all_text: ["stock plan services report"]
+  any_text: ["ending account value", "top holdings", "account holdings",
+             "participant number"]
+  min_score: 0.6
+
+layout:
+  kind: pdf_sections
+  sections:
+    - name: positions
+      role: holdings_as_acquisition
+      start_after: "Common Stock"
+      end_before: "Total Common Stock"
+      row_regex: '^(?P<name>[A-Z][A-Za-z .,&''-]+?)\s*\((?P<ticker>[A-Z]{1,6})\)\s+\$(?P<beginning>[\d,]+\.\d{2})\s+(?P<shares>[\d,]+\.\d{1,4})\s+\$(?P<price>[\d,]+\.\d{2,4})\s+\$(?P<market_value>[\d,]+\.\d{2})\s+\$(?P<cost_total>[\d,]+\.\d{2})'
+
+identity:
+  # "Account #" is absent from some reports entirely, so the participant number
+  # is accepted as a fallback identifier for the same account.
+  account_regex: '(?:Account #\s*|Participant Number:\s*)(?P<account>[A-Z0-9-]{6,})'
+
+rules:
+  plan_type: RSU
+  # A quarterly account report carries dividend totals but not dated dividend
+  # transactions, so it is not evidence of dividend coverage on its own.
+  reports_dividends: false
+  symbol_from_text:
+    microsoft: MSFT
+    broadcom: AVGO
