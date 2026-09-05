@@ -50,6 +50,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -76,8 +77,13 @@ BASELINE = ROOT / "tests" / "fixtures" / "acceptance_baseline.json"
 OUT = ROOT / "work" / "acceptance"
 
 # The acceptance client: the UBS statement set, whose three unresolved dates are
-# the whole point of the exercise.
-DOCS = Path("/home/claude/brokers/RSU brokers/UBS")
+# the whole point of the exercise. The real statement PDFs live outside this
+# repository (never committed) and their location is machine-specific - set
+# RSU_FA_ACCEPTANCE_UBS_DOCS to point at them on a machine other than the
+# original build sandbox. Unset, this preserves the original hardcoded path
+# exactly, so behaviour is unchanged wherever that path already exists.
+DOCS = Path(os.environ.get("RSU_FA_ACCEPTANCE_UBS_DOCS",
+                            "/home/claude/brokers/RSU brokers/UBS"))
 CLIENT_SRC = ROOT / "clients" / "CLIENT_UBS_01"
 PERIOD = Period(dt.date(2025, 1, 1), dt.date(2025, 12, 31))
 
