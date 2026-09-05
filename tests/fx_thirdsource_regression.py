@@ -293,9 +293,23 @@ def main() -> int:  # noqa: C901 - a checklist, deliberately linear
 
     # ------------------------------------------------------------------
     head(5, "THE 30-DAY NEAREST-DATE RULE APPLIES TO EACH EXTERNAL SOURCE")
+    # NOTE on strict vs non-strict, following the strict-mode fix: FXTable.
+    # resolve() now asks every external source for the EXACT date only in its
+    # one ranked pass (see fx_strict_mode_regression.py) - a lower-ranked
+    # source's own nearest-date match must never cut in front of a
+    # higher-ranked source's later carry/stale answer. resolve() never calls
+    # an external source with strict=False; only SBI gets that, twice, after
+    # the loop. So a source's OWN 30-day nearest-date mechanism - which is
+    # still fully intact and still governed by the same MAX_NEAREST_DAYS
+    # window - is exercised here by calling .lookup(strict=False) on the
+    # source directly, exactly as a caller who explicitly wants a nearest
+    # match (rather than the ranked comparison in resolve()) would. This is
+    # the same property this suite has always tested; only the call site
+    # changed to match the corrected architecture - the assertions and
+    # expected values below are unchanged.
     near = FXTable(FXC, register=Register(),
                    fbil_frame=fbil([(dt.date(2023, 4, 6), "USD", "INR", 82.0800)]))
-    qn = near.rate_quote(dt.date(2023, 4, 3), "USD")
+    qn = near.fbil.lookup(dt.date(2023, 4, 3), "USD", strict=False)
     fails += ok(qn is not None and qn.source_type == FBIL
                 and qn.used_date == dt.date(2023, 4, 6) and qn.gap_days == 3
                 and qn.status == "NEAREST_AVAILABLE_DATE",
@@ -308,14 +322,14 @@ def main() -> int:  # noqa: C901 - a checklist, deliberately linear
 
     far = FXTable(FXC, register=Register(),
                   fbil_frame=fbil([(dt.date(2023, 5, 15), "USD", "INR", 82.0800)]))
-    fails += ok(far.rate_quote(dt.date(2023, 4, 3), "USD") is None,
+    fails += ok(far.fbil.lookup(dt.date(2023, 4, 3), "USD", strict=False) is None,
                 f"beyond {MAX_NEAREST_DAYS} days FBIL supplies nothing",
                 "- 42 days away is not a rate for the date")
 
     tie = FXTable(FXC, register=Register(),
                   fbil_frame=fbil([(dt.date(2023, 3, 29), "USD", "INR", 82.1000),
                                    (dt.date(2023, 4, 8), "USD", "INR", 82.3000)]))
-    qt = tie.rate_quote(dt.date(2023, 4, 3), "USD")
+    qt = tie.fbil.lookup(dt.date(2023, 4, 3), "USD", strict=False)
     fails += ok(qt.used_date == dt.date(2023, 3, 29) and qt.gap_days == 5,
                 "equidistant either way, the PRIOR date wins",
                 f"29-03 and 08-04 both 5d away -> {qt.used_date:%d-%m-%Y}")
@@ -323,7 +337,7 @@ def main() -> int:  # noqa: C901 - a checklist, deliberately linear
     ecbn = FXTable(FXC, register=Register(),
                    ecb_frame=ecb([(dt.date(2023, 3, 31), "EUR", "INR", 89.2000),
                                   (dt.date(2023, 3, 31), "EUR", "USD", 1.0875)]))
-    qen = ecbn.rate_quote(dt.date(2023, 4, 3), "USD")
+    qen = ecbn.ecb.lookup(dt.date(2023, 4, 3), "USD", strict=False)
     fails += ok(qen is not None and qen.used_date == dt.date(2023, 3, 31)
                 and all(c[2] == dt.date(2023, 3, 31) for c in qen.components),
                 "the ECB obeys the same rule, and the cross still uses one day",
@@ -332,7 +346,7 @@ def main() -> int:  # noqa: C901 - a checklist, deliberately linear
     # Never reach into another year to find a rate.
     yr = FXTable(FXC, register=Register(),
                  fbil_frame=fbil([(dt.date(2019, 4, 3), "USD", "INR", 69.2000)]))
-    fails += ok(yr.rate_quote(dt.date(2023, 4, 3), "USD") is None,
+    fails += ok(yr.fbil.lookup(dt.date(2023, 4, 3), "USD", strict=False) is None,
                 "a rate from a different year is never used to fill a date",
                 "- 2019 does not answer for 2023")
 

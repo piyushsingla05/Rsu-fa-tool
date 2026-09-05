@@ -430,6 +430,25 @@ class TableFXSource:
                    .sort_values("date").reset_index(drop=True))
 
     # ------------------------------------------------------------------
+    def _pick_exact(self, pool: pd.DataFrame, on: dt.date):
+        """The published date only. Returns (row, status) or None.
+
+        This is the strict-mode contract every ranked source shares: in the
+        first, strict pass of FXTable.resolve(), a source is asked "do you
+        have THIS date", never "do you have something nearby" - the nearest-
+        date search is a distinct, later concession that only fires once the
+        whole ranked list has had its strict turn (see resolve()). A source
+        that searched nearby dates here would let its own approximation cut
+        in front of a higher-ranked source's own, otherwise-legitimate,
+        carry-forward or nearest-date answer.
+        """
+        if pool.empty:
+            return None
+        exact = pool[pool["date"] == on]
+        if len(exact):
+            return exact.iloc[-1], STATUS_EXACT
+        return None
+
     def _pick(self, pool: pd.DataFrame, on: dt.date):
         """Exact, else nearest within the window. Returns (row, status) or None."""
         if pool.empty:
@@ -463,13 +482,18 @@ class TableFXSource:
 
     def lookup(self, on: dt.date, currency: str, strict: bool = True,
                nearest_within: int | None = None):
-        """A DIRECT quote of `currency` against INR, if the table holds one."""
+        """A DIRECT quote of `currency` against INR, if the table holds one.
+
+        strict=True (the ranked-walk default): the exact published date only.
+        strict=False: exact, else the nearest published date within
+        MAX_NEAREST_DAYS either way - unchanged from before.
+        """
         cur = str(currency).strip().upper()
         if cur == TARGET_CURRENCY:
             return None
         pool = self.df[(self.df["base_currency"] == cur)
                        & (self.df["quote_currency"] == TARGET_CURRENCY)]
-        got = self._pick(pool, on)
+        got = self._pick_exact(pool, on) if strict else self._pick(pool, on)
         return None if got is None else self._quote(got[0], got[1], on, cur)
 
 
@@ -479,9 +503,29 @@ class GoogleFinanceSource(TableFXSource):
     The table holds one row per currency/date pair the engine actually needed.
     It is produced by this engine (see FXTable.google_request_frame), populated
     by Google Sheets, and read back here.
+
+    Google is SBI's own designated immediate backup, not a peer of ECB/FBIL/
+    Manual: it sits right behind SBI in the ranked walk specifically so that a
+    non-trading day (weekend, holiday) SBI cannot quote is still answered from
+    the nearest available date, without waiting on SBI's own later carry/stale
+    fallback. That is the "universal FX fallback" this engine has always
+    provided, so - unlike ECB, FBIL and Manual - Google's nearest-date search
+    is NOT withheld under strict=True; it always applies here, exactly as
+    before this file gained a strict-mode distinction for the lower-ranked
+    sources.
     """
 
     source_type = GOOGLE_FINANCE
+
+    def lookup(self, on: dt.date, currency: str, strict: bool = True,
+               nearest_within: int | None = None):
+        cur = str(currency).strip().upper()
+        if cur == TARGET_CURRENCY:
+            return None
+        pool = self.df[(self.df["base_currency"] == cur)
+                       & (self.df["quote_currency"] == TARGET_CURRENCY)]
+        got = self._pick(pool, on)          # exact, else nearest - always
+        return None if got is None else self._quote(got[0], got[1], on, cur)
 
 
 class FBILSource(TableFXSource):
@@ -535,7 +579,7 @@ class FBILSource(TableFXSource):
 
         pool = self.df[(self.df["base_currency"] == cur)
                        & (self.df["quote_currency"] == TARGET_CURRENCY)]
-        got = self._pick(pool, on)
+        got = (self._pick_exact if strict else self._pick)(pool, on)
 
         if cur == "USD":
             # The one direct rate. Nothing is derived and nothing is inferred.
@@ -564,13 +608,14 @@ class FBILSource(TableFXSource):
 
         # The table carries the legs but not the published figure: reproduce
         # FBIL's own cross, from one published day, and show the arithmetic.
-        return self._cross(on, cur, leg, cross_method)
+        return self._cross(on, cur, leg, cross_method, strict)
 
-    def _cross(self, on: dt.date, cur: str, leg: str, method: str):
+    def _cross(self, on: dt.date, cur: str, leg: str, method: str,
+               strict: bool = True):
         """FBIL's own construction: the cross-currency leg times USD/INR."""
         usd_inr_pool = self.df[(self.df["base_currency"] == "USD")
                                & (self.df["quote_currency"] == TARGET_CURRENCY)]
-        got = self._pick(usd_inr_pool, on)
+        got = (self._pick_exact if strict else self._pick)(usd_inr_pool, on)
         if got is None:
             return None
         usd_inr, status = got
@@ -644,12 +689,13 @@ class ECBSource(TableFXSource):
         # EUR/INR is stated directly - always preferred over a derivation.
         eur_inr_pool = self.df[(self.df["base_currency"] == "EUR")
                                & (self.df["quote_currency"] == TARGET_CURRENCY)]
+        pick = self._pick_exact if strict else self._pick
         if cur == "EUR":
-            got = self._pick(eur_inr_pool, on)
+            got = pick(eur_inr_pool, on)
             return None if got is None else self._quote(got[0], got[1], on, cur)
 
         # Anything else: cross through the euro, same published day for both.
-        got = self._pick(eur_inr_pool, on)
+        got = pick(eur_inr_pool, on)
         if got is None:
             return None
         eur_inr, status = got

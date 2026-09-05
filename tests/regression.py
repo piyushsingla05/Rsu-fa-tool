@@ -150,6 +150,8 @@ if __name__ == "__main__":
                           "Universal FX fallback - SBI > Google Finance > blank"),
                          ("fx_thirdsource_regression.py",
                           "Third/fourth FX source - ECB and FBIL"),
+                         ("fx_strict_mode_regression.py",
+                          "Strict-mode fix - exact date only in the ranked pass"),
                          ("test_coverage_and_parity.py",
                           "Dividend coverage + generic parity"),
                          ("api_regression.py",
