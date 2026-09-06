@@ -33,9 +33,9 @@ from .models import (
 )
 from .fxsources import FALLBACK_BANNER
 from .review import (
-    AGG_1042S, DIV_SOURCE_CONFLICT, FA_FX_GAP, FX_UNAVAILABLE, LIMITED_STATEMENT,
-    MISSING_DIV_DATES, MISSING_VEST_DATE, PEAK_QTY_FELL, PEAK_QTY_ROSE,
-    PERIOD_END_FX_BASIS, RECON_BREAK, Register, SALE_TTBR_FALLBACK,
+    AGG_1042S, DIV_SOURCE_CONFLICT, FA_FX_GAP, FX_UNAVAILABLE, INVALID_NUMERIC_FIELD,
+    LIMITED_STATEMENT, MISSING_DIV_DATES, MISSING_VEST_DATE, PEAK_QTY_FELL,
+    PEAK_QTY_ROSE, PERIOD_END_FX_BASIS, RECON_BREAK, Register, SALE_TTBR_FALLBACK,
     TRANSFER_COST_MISSING, UNVERIFIED_FX,
 )
 
@@ -146,6 +146,29 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
         qty = float(r["quantity"] or 0)
 
         if kind in ACQUIRING_EVENTS:
+            if qty != qty:
+                # NaN quantity - an explicit check, not truthiness: "or 0"
+                # elsewhere in this function already treats a genuinely
+                # blank/None field as a legitimate zero, but a value that WAS
+                # present and failed to parse (e.g. an unparseable events.csv
+                # cell coerced to NaN by pd.to_numeric) means the acquired
+                # quantity for this lot is simply unknown. Silently treating
+                # it as zero would drop real shares from every downstream
+                # total; silently keeping the row would build a Lot no one
+                # can trust the size of. Flag it and skip the row instead -
+                # the shortfall this creates surfaces on its own via the
+                # existing MISSING_VEST_DATE blocker for any later disposal,
+                # and via build_reconciliation()'s quantity walk.
+                register.blocker(
+                    INVALID_NUMERIC_FIELD, sym,
+                    f"{kind} on {r['date']:%d-%m-%Y} has an unparseable/"
+                    "invalid quantity and has been excluded rather than "
+                    "treated as zero or guessed. The holding, Schedule FA "
+                    "figures, and any later disposal matching for this lot "
+                    "are understated until this is corrected.",
+                    str(r.get("broker", "")),
+                    "Correct the quantity in the source data and re-run.")
+                continue
             # A stated position that names its lot's own trade date carries the
             # REAL acquisition date, so Schedule FA converts the initial value
             # at the vest date rather than at the statement date. The statement
@@ -184,6 +207,29 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
                         "Obtain the transferring broker's cost basis for this "
                         "lot, or confirm the cost manually, before relying on "
                         "any gain computed from it.")
+            else:
+                # VEST/BUY/POSITION carry a broker-stated price. An explicit
+                # NaN check, not truthiness: a genuine price=0 (accepted
+                # elsewhere in the engine) must NOT be caught here - only a
+                # value that was present and failed to parse should be. The
+                # lot is still built below (its quantity is valid and must
+                # still count toward the holding and reconciliation), but its
+                # price is left at NaN rather than silently zeroed, so every
+                # downstream valuation gated on it (Initial Value/_init_ok,
+                # capital-gain Computable) is corrected to reflect that
+                # rather than reporting a false "ok" - see build_a3() and
+                # build_cg().
+                _price = float(r["price_fc"] or 0)
+                if _price != _price:
+                    register.blocker(
+                        INVALID_NUMERIC_FIELD, sym,
+                        f"{kind} of {qty:g} shares on {acq:%d-%m-%Y} has an "
+                        "unparseable/invalid price and cannot be valued. "
+                        "Initial Value, and any later capital gain matched "
+                        "against this lot, will be left blank rather than "
+                        "computed from a guessed price.",
+                        str(r.get("broker", "")),
+                        "Correct the price in the source data and re-run.")
             lot = Lot(symbol=sym, acquired=acq, quantity=qty,
                       price_fc=float(r["price_fc"] or 0), currency=r["currency"],
                       broker=r["broker"], account_no=str(r["account_no"]), event=kind,
@@ -363,6 +409,16 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
                              + " for "
                              + ", ".join(f"{d:%d-%m-%Y}"
                                          for _, d in fallback_dates))
+            if wavg_price != wavg_price:
+                # A lot's price_fc failed to parse (flagged as
+                # INVALID_NUMERIC_FIELD when the lot was built in
+                # build_lots()). The weighted-average price - and therefore
+                # Initial Value - is unusable regardless of whether every FX
+                # date happened to resolve (limited_statement mode does not
+                # even look at FX dates here). Gate it exactly like an
+                # unresolved FX date already is, rather than reporting a
+                # deceptively "ok" Initial Value that is actually NaN.
+                init_ok = False
             if q_end is not None and q_end.is_fallback:
                 basis += f" | period-end FX: {q_end.fallback_banner}"
 
@@ -631,11 +687,28 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
         if m.broker_adj_cost_fc is not None:
             cost_basis += (" (Adjusted Cost Basis - includes the ordinary income "
                            "already taxed as a perquisite)")
+        # A cost basis of NaN is not the same as a resolved rate of zero -
+        # explicit check, not truthiness. cost_price_fc carries a lot's price
+        # through unchanged from build_lots() (already flagged there as
+        # INVALID_NUMERIC_FIELD if it failed to parse); stated_cost_fc, where
+        # present, is broker-supplied. Either being NaN means the cost of
+        # this sale is genuinely unknown, not zero.
+        cost_ok = cost_fc_per_share == cost_fc_per_share
+        if not cost_ok:
+            register.blocker(
+                INVALID_NUMERIC_FIELD, m.symbol,
+                f"Sale on {m.sold_on:%d-%m-%Y} is matched to a lot whose "
+                "acquisition price could not be parsed, so the cost of "
+                "acquisition and capital gain for this quantity cannot be "
+                "computed and are left blank rather than guessed.",
+                "Lot matching",
+                "Correct the acquisition price in the source data and "
+                "re-run.")
         # A missing rate is not a rate of zero. Where either conversion has no
         # rate on file the rupee figures are NOT computed, because a cost of nil
         # would report the entire sale proceeds as gain - an error far larger and
         # far less visible than a blank cell beside a blocker.
-        computable = bool(rate_sale) and bool(rate_cost)
+        computable = bool(rate_sale) and bool(rate_cost) and cost_ok
         # Each rupee column is blanked against the rate IT actually needs, and
         # every rendering of this row - screen, API and workbook - applies the
         # same test:
@@ -658,7 +731,8 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
                                                   else ""),
             "Vested Price per Share (FC)": round(cost_fc_per_share, 6),
             "FX Rate - Vest Date": rate_cost or "",
-            "Cost of Acquisition (Rs.)": round(cost, 0) if rate_cost else "",
+            "Cost of Acquisition (Rs.)": (
+                round(cost, 0) if (rate_cost and cost_ok) else ""),
             "Capital Gain (Rs.)": round(proceeds - cost, 0) if computable else "",
             "Cost Conversion Basis": cost_basis,
             # ---- backend provenance: what the broker said and which rate was used
@@ -675,7 +749,9 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
             "FX Date Used - Cost": cost_rate_date or "",
             "FX Source - Sale": sale_src,
             "FX Source - Cost": (q_cost.source_type if q_cost else "NONE"),
-            "Computable": "Yes" if computable else "No - FX unavailable",
+            "Computable": ("Yes" if computable
+                           else ("No - invalid cost basis" if not cost_ok
+                                 else "No - FX unavailable")),
             "Source Document": m.source_ref,
         })
     return pd.DataFrame(rows)

@@ -43,6 +43,15 @@ UNVERIFIED_PRICE = "Unverified market price"
 DUPLICATE_CANDIDATE = "Possible duplicate transaction"
 TRANSFER_COST_MISSING = "Transfer-in cost basis unavailable"
 FA_FX_GAP = "FA figure excludes a date FX could not convert"
+# No existing category names "the source field itself failed to parse."
+# MISSING_VEST_DATE is a disposal-exceeds-holdings shortfall, TRANSFER_COST_MISSING
+# is scoped to transfer-in cost specifically, and RECON_BREAK is a downstream
+# aggregate symptom, not the root cause. A value that WAS present on the
+# statement but could not be read as a number (e.g. a garbled events.csv cell,
+# coerced to NaN) is a distinct, actionable finding - go back to the source
+# document and read the actual figure - so it gets its own category rather
+# than overloading one of the above.
+INVALID_NUMERIC_FIELD = "Invalid or unparseable numeric field"
 
 
 @dataclass
