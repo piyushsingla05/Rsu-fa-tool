@@ -101,10 +101,17 @@ check(not cross_lot_matches,
       str([(m.acquired_on, m.quantity) for m in matches_a]))
 
 unmatched = [m for m in matches_a if m.acquired_on is None]
+# cost_price_fc is NaN, not a placeholder 0.0 - updated for the closed-lot-
+# record/unmatched-disposal cost fix: a hardcoded zero here would (via
+# build_cg()) report the full sale proceeds as a taxable gain against an
+# invented Rs.0 cost, which is exactly the defect that fix removed. NaN is
+# left genuinely unresolved instead, and build_cg()'s cost_ok gate (commit
+# 1412859) keeps the resulting capital-gain figure blank rather than wrong.
 check(len(unmatched) == 1 and abs(unmatched[0].quantity - 30.0) < 1e-9
-      and unmatched[0].cost_price_fc == 0.0,
+      and unmatched[0].cost_price_fc != unmatched[0].cost_price_fc,
       "the unmatched 30 shares are recorded with no acquisition date and no "
-      "invented cost - no gain/loss is silently calculated for them",
+      "invented cost (NaN, not a false zero) - no gain/loss is silently "
+      "calculated for them",
       f"{unmatched[0].quantity if unmatched else None} qty, "
       f"cost={unmatched[0].cost_price_fc if unmatched else None}")
 

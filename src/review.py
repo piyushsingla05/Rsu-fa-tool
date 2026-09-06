@@ -42,6 +42,17 @@ CG_CONTROL_TOTAL = "Realised gain control total"
 UNVERIFIED_PRICE = "Unverified market price"
 DUPLICATE_CANDIDATE = "Possible duplicate transaction"
 TRANSFER_COST_MISSING = "Transfer-in cost basis unavailable"
+# Deliberately NOT reused/generalised for a disposal's missing acquisition
+# cost: its reason text says "Transfer-in" specifically, and would misreport
+# an ordinary sale's register entry as being about a transfer. The underlying
+# principle is the same one TRANSFER_COST_MISSING already applies ("never
+# invent a cost of zero - flag it instead"), so this is that principle's
+# sibling for the closed-lot-record/unmatched-disposal case, not a new
+# principle. Also distinct from INVALID_NUMERIC_FIELD: that category means a
+# value WAS present and failed to parse; this one means no cost value was
+# ever supplied at all - "missing" and "unparseable" are different findings
+# with different remedies (supply the figure vs. correct the figure).
+ACQUISITION_COST_MISSING = "Acquisition cost basis unavailable"
 FA_FX_GAP = "FA figure excludes a date FX could not convert"
 # No existing category names "the source field itself failed to parse."
 # MISSING_VEST_DATE is a disposal-exceeds-holdings shortfall, TRANSFER_COST_MISSING

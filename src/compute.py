@@ -33,10 +33,10 @@ from .models import (
 )
 from .fxsources import FALLBACK_BANNER
 from .review import (
-    AGG_1042S, DIV_SOURCE_CONFLICT, FA_FX_GAP, FX_UNAVAILABLE, INVALID_NUMERIC_FIELD,
-    LIMITED_STATEMENT, MISSING_DIV_DATES, MISSING_VEST_DATE, PEAK_QTY_FELL,
-    PEAK_QTY_ROSE, PERIOD_END_FX_BASIS, RECON_BREAK, Register, SALE_TTBR_FALLBACK,
-    TRANSFER_COST_MISSING, UNVERIFIED_FX,
+    ACQUISITION_COST_MISSING, AGG_1042S, DIV_SOURCE_CONFLICT, FA_FX_GAP,
+    FX_UNAVAILABLE, INVALID_NUMERIC_FIELD, LIMITED_STATEMENT, MISSING_DIV_DATES,
+    MISSING_VEST_DATE, PEAK_QTY_FELL, PEAK_QTY_ROSE, PERIOD_END_FX_BASIS,
+    RECON_BREAK, Register, SALE_TTBR_FALLBACK, TRANSFER_COST_MISSING, UNVERIFIED_FX,
 )
 
 LTCG_DAYS = 730
@@ -258,11 +258,35 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
             first_match = len(matches)
             remaining = qty
             if stated_acq is not None and kind in PROCEEDS_EVENTS:
+                # cost_price_fc starts unresolved (NaN), never a placeholder
+                # zero: unlike the ordinary FIFO match below, this record has
+                # no acquiring Lot to draw a real price from. Immediately
+                # below, IF the broker actually stated a cost, the pro-rata
+                # block overwrites stated_cost_fc with it (build_cg() prefers
+                # stated_cost_fc when it is set) and this NaN is never used.
+                # If no cost was ever stated, it stays NaN, and the very gate
+                # commit 1412859 already added to build_cg() - cost_ok - then
+                # correctly leaves Cost of Acquisition/Capital Gain
+                # unresolved instead of reporting the full sale proceeds as
+                # gain against an invented zero cost.
                 matches.append(SaleMatch(
                     symbol=sym, sold_on=r["date"], acquired_on=stated_acq,
                     quantity=qty, sale_price_fc=float(r["price_fc"] or 0),
-                    cost_price_fc=0.0, currency=r["currency"],
+                    cost_price_fc=float("nan"), currency=r["currency"],
                     holding_days=(r["date"] - stated_acq).days))
+                if stated is None:
+                    register.blocker(
+                        ACQUISITION_COST_MISSING, sym,
+                        f"Closed-lot disposal of {qty:g} shares on "
+                        f"{r['date']:%d-%m-%Y} (stated acquisition date "
+                        f"{stated_acq:%d-%m-%Y}) carries no acquisition "
+                        "cost. Costing it at zero would report the entire "
+                        "sale proceeds as gain, so the cost is left "
+                        "unresolved instead.",
+                        str(r.get("broker", "")),
+                        "Supply the acquisition cost for this lot, or "
+                        "confirm it manually, before relying on any gain "
+                        "computed from it.")
                 for lot in open_lots.get((r["broker"], sym), []):  # keep holdings correct, this broker only
                     if remaining <= 1e-9:
                         break
@@ -311,10 +335,21 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
 
             if remaining > 1e-6:
                 if kind in PROCEEDS_EVENTS:
+                    # Reached only when `stated` is None (a stated cost would
+                    # already have been consumed, with remaining zeroed, by
+                    # the `stated is not None` branch above) - there is no
+                    # lot AND no stated cost, so cost_price_fc is left
+                    # unresolved (NaN) rather than an invented zero, for the
+                    # same reason as the closed-lot-record branch above.
+                    # cost_ok in build_cg() (commit 1412859) then keeps this
+                    # row's Cost of Acquisition/Capital Gain blank instead of
+                    # reporting the full sale proceeds as gain - the
+                    # MISSING_VEST_DATE blocker below already explains why.
                     matches.append(SaleMatch(
                         symbol=sym, sold_on=r["date"], acquired_on=None,
                         quantity=remaining, sale_price_fc=float(r["price_fc"] or 0),
-                        cost_price_fc=0.0, currency=r["currency"], holding_days=0))
+                        cost_price_fc=float("nan"), currency=r["currency"],
+                        holding_days=0))
                 register.blocker(
                     MISSING_VEST_DATE, sym,
                     f"Disposal of {qty:g} on {r['date']:%d-%m-%Y} exceeds tracked "
@@ -695,15 +730,26 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
         # this sale is genuinely unknown, not zero.
         cost_ok = cost_fc_per_share == cost_fc_per_share
         if not cost_ok:
+            # Two distinct root causes reach this same gate: a matched Lot
+            # whose own price_fc failed to parse (already flagged as
+            # INVALID_NUMERIC_FIELD at the Lot's construction in
+            # build_lots()), and a closed-lot-record/unmatched disposal with
+            # no cost evidence at all (already flagged as
+            # ACQUISITION_COST_MISSING there instead - see the same
+            # function). This blocker is this gate's OWN diagnostic - it is
+            # not about which of those happened, only that, whichever it
+            # was, the resulting cost cannot be trusted for THIS row's
+            # rupee figures - so its wording deliberately does not assume
+            # "a lot" was involved.
             register.blocker(
                 INVALID_NUMERIC_FIELD, m.symbol,
-                f"Sale on {m.sold_on:%d-%m-%Y} is matched to a lot whose "
-                "acquisition price could not be parsed, so the cost of "
-                "acquisition and capital gain for this quantity cannot be "
-                "computed and are left blank rather than guessed.",
+                f"Sale on {m.sold_on:%d-%m-%Y} has an unresolved or "
+                "unparseable acquisition cost, so the cost of acquisition "
+                "and capital gain for this quantity cannot be computed and "
+                "are left blank rather than guessed.",
                 "Lot matching",
-                "Correct the acquisition price in the source data and "
-                "re-run.")
+                "Correct or supply the acquisition cost in the source data "
+                "and re-run.")
         # A missing rate is not a rate of zero. Where either conversion has no
         # rate on file the rupee figures are NOT computed, because a cost of nil
         # would report the entire sale proceeds as gain - an error far larger and
