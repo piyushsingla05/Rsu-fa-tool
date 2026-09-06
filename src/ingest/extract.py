@@ -1094,9 +1094,21 @@ def _extract_events(doc, profile, broker, rec):
             if date is None:
                 continue
 
-            price = G.to_number(r.get(c.get("price_fc")))
-            if not price and c.get("cost_total_fc"):
-                total = G.to_number(r.get(c.get("cost_total_fc")))
+            # NaN, not a silent zero, when the price was present but
+            # unparseable - this is the generic/synonym-driven fallback used
+            # for a broker with no profile (and for a profile-driven table
+            # that is neither pdf_sections nor closed_lot_gains), so a
+            # malformed price here would otherwise reach build_lots() as a
+            # real Rs.0 VEST/BUY price with no diagnostic (the existing
+            # 1412859 NaN-price check never sees it, since it is not NaN).
+            # The fallback to cost_total_fc is preserved for a malformed
+            # price exactly as it already was for a blank/zero one - "not
+            # price" alone is not enough, since NaN is truthy in Python and
+            # would silently defeat the fallback.
+            price = G.to_number(r.get(c.get("price_fc")), on_invalid="nan")
+            price_ok = price == price
+            if (not price or not price_ok) and c.get("cost_total_fc"):
+                total = G.to_number(r.get(c.get("cost_total_fc")), on_invalid="nan")
                 price = (total / qty) if qty else 0.0
 
             # Use every text cell in the row. A generic pass has no idea which
@@ -1117,7 +1129,10 @@ def _extract_events(doc, profile, broker, rec):
                 "notes": f"{plan_type} | {t.coords(i)}",
             })
             # A reinvested dividend is income as well as an acquisition.
-            if plan_type == "DIVIDEND_REINVESTMENT" and price:
+            # `price == price` excludes NaN explicitly - NaN is truthy in
+            # Python, so `and price` alone would fabricate a DIV row with an
+            # unresolved (NaN) amount_fc for a malformed/unresolved price.
+            if plan_type == "DIVIDEND_REINVESTMENT" and price and price == price:
                 rows.append({
                     "date": date, "broker": broker, "account_no": account or "",
                     "symbol": symbol, "event": "DIV", "quantity": "",
