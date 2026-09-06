@@ -815,6 +815,28 @@ def _stage_to_events(staged, symbol, broker, account, additive_split, rules):
                 "notes": f"{plan} | {s['source']}",
             })
             running += qty
+        elif s["event"] == "TRANSFER_OUT":
+            # Mirrors TRANSFER_IN above, in the opposite direction. TRANSFER_OUT
+            # is a DISPOSING_EVENT (models.py) but is never a PROCEEDS_EVENT, so
+            # build_lots() reduces the open lots by this quantity without ever
+            # creating a SaleMatch/gain or inventing a cost - exactly like a
+            # TRANSFER_IN never invents a gain on the receiving side. Preserving
+            # this row (instead of the previous silent drop) is what lets the
+            # source account's FA-A2/A3 quantities and the reconciliation walk
+            # (build_reconciliation's `tout = total({TRANSFER_OUT})`) come out
+            # right; no assumption is made about which destination broker
+            # received the shares; a corresponding TRANSFER_IN at another
+            # broker/account is that account's own independent event and is
+            # tracked separately - there is nothing here to double count.
+            price = (abs(s["book_value"]) / qty) if qty else 0.0
+            out.append({
+                "date": s["date"], "broker": broker, "account_no": account,
+                "symbol": symbol, "event": "TRANSFER_OUT", "quantity": qty,
+                "price_fc": round(price, 6), "amount_fc": "", "tax_fc": "",
+                "cost_fc": "", "currency": "USD",
+                "notes": f"{plan} | {s['source']}",
+            })
+            running -= qty
         elif s["event"] == "DIV":
             out.append({
                 "date": s["date"], "broker": broker, "account_no": account,
