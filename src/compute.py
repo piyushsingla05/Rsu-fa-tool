@@ -130,7 +130,14 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
     ev = events.sort_values(["date", "symbol"]).copy()
     if as_at is not None:
         ev = ev[ev["date"] <= as_at]
-    open_lots: dict[str, list[Lot]] = {}
+    # Keyed by (broker, symbol), not symbol alone: a disposal at one broker
+    # must never consume another broker's lots for the same security. Cross-
+    # broker movement has its own explicit, flagged mechanism (TRANSFER_IN/
+    # TRANSFER_OUT) - see build_cross_broker()'s own docstring, "no linkage
+    # has been assumed". If a broker's disposal exceeds its OWN tracked
+    # lots, that must surface as the existing MISSING_VEST_DATE blocker
+    # below, not be silently absorbed from a different broker's holding.
+    open_lots: dict[tuple[str, str], list[Lot]] = {}
     matches: list[SaleMatch] = []
     all_lots: list[Lot] = []
 
@@ -181,7 +188,7 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
                       price_fc=float(r["price_fc"] or 0), currency=r["currency"],
                       broker=r["broker"], account_no=str(r["account_no"]), event=kind,
                       stated_at=r["date"])
-            open_lots.setdefault(sym, []).append(lot)
+            open_lots.setdefault((r["broker"], sym), []).append(lot)
             all_lots.append(lot)
 
         elif kind in DISPOSING_EVENTS:
@@ -210,7 +217,7 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
                     quantity=qty, sale_price_fc=float(r["price_fc"] or 0),
                     cost_price_fc=0.0, currency=r["currency"],
                     holding_days=(r["date"] - stated_acq).days))
-                for lot in open_lots.get(sym, []):        # keep holdings correct
+                for lot in open_lots.get((r["broker"], sym), []):  # keep holdings correct, this broker only
                     if remaining <= 1e-9:
                         break
                     if _already_netted(lot, r["date"]):
@@ -219,7 +226,7 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
                     lot.remaining -= take
                     remaining -= take
                 remaining = 0.0                            # record is complete
-            for lot in open_lots.get(sym, []):
+            for lot in open_lots.get((r["broker"], sym), []):
                 if remaining <= 1e-9:
                     break
                 if lot.remaining <= 1e-9 or _already_netted(lot, r["date"]):
@@ -276,11 +283,18 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
             _attach_broker_figures(r, matches[first_match:], qty)
 
         elif kind == SPLIT:
+            # A corporate action affects the security wherever it is held, so
+            # (unlike acquisition/disposal above) this applies across every
+            # broker's lots for the symbol, not just one - open_lots is keyed
+            # by (broker, symbol), so every matching key must be visited.
             ratio = float(r["quantity"] or 1)
-            for lot in open_lots.get(sym, []):
-                lot.quantity *= ratio
-                lot.remaining *= ratio
-                lot.price_fc /= ratio if ratio else 1
+            for (lot_broker, lot_sym), lot_list in open_lots.items():
+                if lot_sym != sym:
+                    continue
+                for lot in lot_list:
+                    lot.quantity *= ratio
+                    lot.remaining *= ratio
+                    lot.price_fc /= ratio if ratio else 1
 
     return all_lots, matches
 
