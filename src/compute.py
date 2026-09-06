@@ -27,15 +27,16 @@ import pandas as pd
 from .fx import FXTable
 from .marketdata import MarketData
 from .models import (
-    ACQUIRING_EVENTS, DISPOSING_EVENTS, PROCEEDS_EVENTS, DIV, DIV_TAX, SELL,
-    SPLIT, TAX_WITHHOLD, TRANSFER_IN, TRANSFER_OUT, FX_SAME_DAY, Lot, Period,
-    SaleMatch,
+    ACQUIRING_EVENTS, DISPOSING_EVENTS, PROCEEDS_EVENTS, BUY, DIV, DIV_TAX,
+    SELL, SPLIT, TAX_WITHHOLD, TRANSFER_IN, TRANSFER_OUT, VEST, FX_SAME_DAY,
+    Lot, Period, SaleMatch,
 )
 from .fxsources import FALLBACK_BANNER
 from .review import (
-    AGG_1042S, DIV_SOURCE_CONFLICT, FX_UNAVAILABLE, LIMITED_STATEMENT,
-    MISSING_DIV_DATES, MISSING_VEST_DATE, PEAK_QTY_FELL, PERIOD_END_FX_BASIS,
-    RECON_BREAK, Register, SALE_TTBR_FALLBACK, UNVERIFIED_FX,
+    AGG_1042S, DIV_SOURCE_CONFLICT, FA_FX_GAP, FX_UNAVAILABLE, LIMITED_STATEMENT,
+    MISSING_DIV_DATES, MISSING_VEST_DATE, PEAK_QTY_FELL, PEAK_QTY_ROSE,
+    PERIOD_END_FX_BASIS, RECON_BREAK, Register, SALE_TTBR_FALLBACK,
+    TRANSFER_COST_MISSING, UNVERIFIED_FX,
 )
 
 LTCG_DAYS = 730
@@ -51,6 +52,47 @@ def _already_netted(lot, disposal_date) -> bool:
     """
     return (lot.event == "POSITION"
             and disposal_date <= (lot.stated_at or lot.acquired))
+
+
+def _rate_or_flag(fx: FXTable, register: Register, date: dt.date, cur: str,
+                   purpose: str, subject: str, source: str) -> float:
+    """fx.rate(), but an unresolved date is flagged rather than passed on mute.
+
+    Returns 0.0 on an unresolved date, exactly as fx.rate() itself would -
+    the arithmetic and the resulting total are unchanged - but the gap is now
+    raised on REVIEW_REQUIRED instead of disappearing into the total with no
+    trace. Callers that can instead leave the whole figure blank on an
+    unresolved date should keep using rate_quote() directly and gate the
+    cell on the quote, the way build_a3's own initial/peak/closing values do.
+
+    Design note (why a partial, flagged total and not a blanked one): this is
+    deliberately NOT the same choice build_a3 makes for Initial Value, where
+    ONE unresolvable vest date blanks the WHOLE weighted average - that is a
+    genuine average, and averaging over only the resolvable lots would silently
+    change what the figure MEANS. A2 balance/credited and A3 dividend/proceeds
+    are plain sums of independent, dated amounts: each resolvable date's
+    contribution is a real, correct figure on its own, so summing the ones that
+    ARE resolvable and flagging the one that is not (understated, never
+    fabricated) is the more informative choice, and is the same "known
+    limitation, disclosed rather than blanked" pattern the engine already uses
+    for PEAK_QTY_FELL (peak value understates on disposals by convention,
+    flagged, not blanked). Blanking the entire total on one bad date among many
+    would also risk changing a real acceptance-run figure with no clear
+    requirement forcing that; this fix only had to make the existing gap
+    visible, not change what is computed.
+    """
+    q = fx.rate_quote(date, cur, FX_SAME_DAY, purpose=purpose)
+    if q is None:
+        register.review(
+            FA_FX_GAP, subject,
+            f"No FX source can price {cur} for {date:%d-%m-%Y}. This date's "
+            f"contribution to \"{purpose}\" has been left at nil rather than "
+            "converted at an unavailable rate, so the total is understated "
+            "to that extent.",
+            source,
+            "Supply the missing FX rate for this date, or accept the total "
+            "as understated to that extent.")
+    return q.rate if q else 0.0
 
 
 @dataclass
@@ -113,6 +155,28 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
                     stated_lot = None
             if stated_lot is not None and kind == "POSITION":
                 acq = stated_lot
+            if kind == TRANSFER_IN:
+                # A transfer-in with no cost basis would otherwise silently
+                # become a zero-cost lot, overstating any later capital gain
+                # by the full sale proceeds. Never invent the cost - flag it
+                # instead, so the lot is not relied on until the cost is
+                # supplied. (Other acquiring events - VEST/BUY/POSITION -
+                # carry a broker-stated price and are unaffected.)
+                try:
+                    _transfer_cost = float(r["price_fc"] or 0)
+                except (TypeError, ValueError):
+                    _transfer_cost = 0.0
+                if not (_transfer_cost == _transfer_cost) or _transfer_cost <= 0:
+                    register.blocker(
+                        TRANSFER_COST_MISSING, sym,
+                        f"TRANSFER_IN of {qty:g} shares on {acq:%d-%m-%Y} carries "
+                        "no cost basis. Recording it at zero cost would overstate "
+                        "any later capital gain by the full sale proceeds, so the "
+                        "lot is flagged rather than costed at zero.",
+                        str(r.get("broker", "")),
+                        "Obtain the transferring broker's cost basis for this "
+                        "lot, or confirm the cost manually, before relying on "
+                        "any gain computed from it.")
             lot = Lot(symbol=sym, acquired=acq, quantity=qty,
                       price_fc=float(r["price_fc"] or 0), currency=r["currency"],
                       broker=r["broker"], account_no=str(r["account_no"]), event=kind,
@@ -231,8 +295,8 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
 
     div_by_sym, proceeds_by_sym = {}, {}
     for sym in sorted(set(events["symbol"].dropna())):
-        div_by_sym[sym] = _sum_dividends(events, sym, fx, period)
-        proceeds_by_sym[sym] = _sum_proceeds(events, sym, fx, period)
+        div_by_sym[sym] = _sum_dividends(events, sym, fx, period, register)
+        proceeds_by_sym[sym] = _sum_proceeds(events, sym, fx, period, register)
 
     held = [l for l in lots if l.remaining > 1e-9 and l.acquired <= period.end]
     by_symbol: dict[str, list[Lot]] = {}
@@ -247,7 +311,7 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
         q_end = fx.rate_quote(period.end, cur, FX_SAME_DAY, purpose="A3 peak & closing")
         rate_end = q_end.rate if q_end else 0.0
         end_ok = q_end is not None
-        high, close, _ = md.resolve(sym, period.end)
+        high, close, high_ok, close_ok, _ = md.resolve(sym, period.end)
 
         _flag_peak_quantity(events, sym, period, register)
 
@@ -300,9 +364,9 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
                 "Initial Value of the Investment (Rs.)": (
                     round(qty * wavg_price * rate_init, 0) if init_ok else ""),
                 "Peak Value of Investment During the Period (Rs.)": (
-                    round(qty * high * rate_end, 0) if end_ok else ""),
+                    round(qty * high * rate_end, 0) if (end_ok and high_ok) else ""),
                 "Closing Value (Rs.)": (
-                    round(qty * close * rate_end, 0) if end_ok else ""),
+                    round(qty * close * rate_end, 0) if (end_ok and close_ok) else ""),
                 "Total Gross Amount Paid/Credited w.r.t. the Holding (Rs.)":
                     round(div_by_sym.get(sym, 0.0), 0) if first else 0,
                 "Total Gross Proceeds from Sale/Redemption (Rs.)":
@@ -311,7 +375,8 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
                 "_vest_price_fc": round(wavg_price, 4),
                 "_rate_vest": round(rate_init, 4),
                 "_high_fc": high, "_close_fc": close, "_rate_end": rate_end,
-                "_basis": basis, "_init_ok": init_ok, "_end_ok": end_ok,
+                "_basis": basis, "_init_ok": init_ok,
+                "_peak_ok": end_ok and high_ok, "_close_val_ok": end_ok and close_ok,
                 "_broker": ", ".join(sorted({l.broker for l in grp})),
             })
             first = False
@@ -352,7 +417,19 @@ def build_a3(events, lots, entities, md: MarketData, fx: FXTable,
 
 
 def _flag_peak_quantity(events, sym, period, register: Register) -> None:
-    """The period-end-quantity convention understates peak when holdings shrank."""
+    """The period-end-quantity convention can misstate peak in EITHER direction.
+
+    Understatement: shares disposed of during the period were held earlier
+    but are excluded from the period-end quantity the peak is based on.
+    Overstatement: shares acquired (vested/bought/transferred in) during the
+    period are INCLUDED in that same period-end quantity, even though they
+    were not actually held on the date the annual high occurred - if that
+    high fell before the acquisition, the peak is computed on shares that,
+    on that date, did not yet exist in the holding.
+
+    The convention itself (period-end quantity x annual high) is unchanged
+    and stays exactly as agreed; both flags are disclosure only.
+    """
     ev = events[(events["symbol"] == sym)
                 & (events["date"] >= period.start) & (events["date"] <= period.end)]
     disposed = sum(float(r["quantity"] or 0) for _, r in ev.iterrows()
@@ -363,6 +440,20 @@ def _flag_peak_quantity(events, sym, period, register: Register) -> None:
             f"{disposed:,.4f} shares left the holding during the period. Peak value "
             "uses the PERIOD-END quantity by agreed convention, so the peak is "
             "understated to the extent shares were held earlier and disposed of.",
+            "Agreed A3 convention",
+            "Confirm the convention is acceptable for this client, or compute the "
+            "peak on the quantity actually held on the high-price date.")
+
+    acquired = sum(float(r["quantity"] or 0) for _, r in ev.iterrows()
+                   if r["event"] in (VEST, BUY, TRANSFER_IN))
+    if acquired > 1e-6:
+        register.review(
+            PEAK_QTY_ROSE, sym,
+            f"{acquired:,.4f} shares were acquired during the period. Peak value "
+            "uses the PERIOD-END quantity by agreed convention, so to the extent "
+            "the annual high fell BEFORE these shares were acquired, the peak may "
+            "be overstated relative to what was actually held on the high-price "
+            "date.",
             "Agreed A3 convention",
             "Confirm the convention is acceptable for this client, or compute the "
             "peak on the quantity actually held on the high-price date.")
@@ -403,7 +494,8 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
             if "currency" in sub and len(sub):
                 cur = sub["currency"].iloc[0]
             vals = [(c["date"], float(c["balance_fc"])
-                     * fx.rate(c["date"], cur, FX_SAME_DAY, purpose=f"A2 balance {acno}"))
+                     * _rate_or_flag(fx, register, c["date"], cur,
+                                     f"A2 balance {acno}", label, "cash.csv"))
                     for _, c in sub.iterrows()]
             peak_inr = max((v for _, v in vals), default=0.0)
             end = [v for d, v in vals if d == period.end]
@@ -420,8 +512,9 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
                     amt = float(r["amount_fc"] or 0)
                     if not amt and r["event"] == SELL:
                         amt = float(r["quantity"] or 0) * float(r["price_fc"] or 0)
-                    credited += amt * fx.rate(r["date"], cur, FX_SAME_DAY,
-                                              purpose=f"A2 credit {acno}")
+                    credited += amt * _rate_or_flag(
+                        fx, register, r["date"], cur, f"A2 credit {acno}",
+                        label, str(r.get("notes", "") or "events"))
         rows.append({
             "Sr. No": len(rows) + 1,
             "Country Name": acct.get("country", "United States of America"),
@@ -912,23 +1005,25 @@ def _qty(ev: pd.DataFrame) -> float:
 
 
 # ======================================================================
-def _sum_dividends(events, sym, fx, period) -> float:
+def _sum_dividends(events, sym, fx, period, register: Register) -> float:
     t = 0.0
     ev = events[(events["symbol"] == sym) & (events["event"] == DIV)]
     for _, r in ev.iterrows():
         if period.start <= r["date"] <= period.end:
-            t += float(r["amount_fc"] or 0) * fx.rate(
-                r["date"], r["currency"], FX_SAME_DAY, purpose=f"A3 dividend {sym}")
+            t += float(r["amount_fc"] or 0) * _rate_or_flag(
+                fx, register, r["date"], r["currency"], f"A3 dividend {sym}",
+                sym, str(r.get("notes", "") or "events"))
     return t
 
 
-def _sum_proceeds(events, sym, fx, period) -> float:
+def _sum_proceeds(events, sym, fx, period, register: Register) -> float:
     """Only genuine sales. Share withholding produces no proceeds."""
     t = 0.0
     ev = events[(events["symbol"] == sym) & (events["event"].isin(PROCEEDS_EVENTS))]
     for _, r in ev.iterrows():
         if period.start <= r["date"] <= period.end:
             amt = float(r["amount_fc"] or 0) or float(r["quantity"] or 0) * float(r["price_fc"] or 0)
-            t += amt * fx.rate(r["date"], r["currency"], FX_SAME_DAY,
-                               purpose=f"A3 sale proceeds {sym}")
+            t += amt * _rate_or_flag(
+                fx, register, r["date"], r["currency"], f"A3 sale proceeds {sym}",
+                sym, str(r.get("notes", "") or "events"))
     return t

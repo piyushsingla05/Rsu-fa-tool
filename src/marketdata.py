@@ -115,8 +115,18 @@ class MarketData:
             self.used.append(p)
         return p
 
-    def resolve(self, ticker: str, period_end: dt.date) -> tuple[float, float, dict]:
-        """Return (annual_high, period_end_close, provenance) and raise flags."""
+    def resolve(self, ticker: str, period_end: dt.date
+                ) -> tuple[float, float, bool, bool, dict]:
+        """Return (annual_high, period_end_close, high_ok, close_ok, provenance).
+
+        `high`/`close` are 0.0 whenever the corresponding `_ok` flag is False,
+        purely so arithmetic elsewhere does not explode on a plain float - the
+        blocker this method raises already says the figure is missing, and it
+        must never reach a working-paper cell as though it were a real,
+        computed nil. Callers must gate any cell that multiplies through
+        `high`/`close` on the matching `_ok` flag, the same way FX-unavailable
+        cells are gated on their own quote.
+        """
         high = self.get(ticker, ANNUAL_HIGH, period_end)
         close = self.get(ticker, PERIOD_END_CLOSE, period_end)
         prov = {"high": high, "close": close}
@@ -153,6 +163,8 @@ class MarketData:
 
         return (high.price if high else 0.0,
                 close.price if close else 0.0,
+                high is not None,
+                close is not None,
                 prov)
 
     # ------------------------------------------------------------------

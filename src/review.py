@@ -30,6 +30,7 @@ MISSING_DIV_DATES = "Dividend transaction dates unavailable"
 AGG_1042S = "1042-S aggregate conversion"
 DIV_SOURCE_CONFLICT = "Dividend source precedence applied"
 PEAK_QTY_FELL = "Quantity fell during the period"
+PEAK_QTY_ROSE = "Quantity rose during the period"
 RECON_BREAK = "Holding reconciliation break"
 MISSING_TICKER = "Security/ticker mapping missing"
 UNVERIFIED_FX = "Unverified SBI TTBR"
@@ -40,6 +41,8 @@ CG_SOURCE_PRECEDENCE = "Capital gain source precedence applied"
 CG_CONTROL_TOTAL = "Realised gain control total"
 UNVERIFIED_PRICE = "Unverified market price"
 DUPLICATE_CANDIDATE = "Possible duplicate transaction"
+TRANSFER_COST_MISSING = "Transfer-in cost basis unavailable"
+FA_FX_GAP = "FA figure excludes a date FX could not convert"
 
 
 @dataclass

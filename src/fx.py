@@ -192,7 +192,12 @@ class FXTable:
         df["verified"] = (
             df["verified"].astype(str).str.strip().str.upper().isin(["Y", "YES", "TRUE", "1"])
         )
-        df = df.dropna(subset=["ttbr"]).sort_values("date")
+        # A blank, zero or negative TTBR is not a rate - dropped on load, same
+        # as every other source (see TableFXSource._load), so a bad or empty
+        # cell in the SBI table leaves the date unresolved rather than
+        # resolving it at zero or below.
+        df = df.dropna(subset=["ttbr"])
+        df = df[df["ttbr"] > 0].sort_values("date")
         self.df = df
 
     def merge(self, rows: pd.DataFrame, priority: bool = True) -> None:
@@ -206,7 +211,9 @@ class FXTable:
                            .isin(["Y", "YES", "TRUE", "1"]))
         combined = (pd.concat([add, self.df], ignore_index=True) if priority
                     else pd.concat([self.df, add], ignore_index=True))
-        self.df = (combined.dropna(subset=["ttbr"])
+        combined = combined.dropna(subset=["ttbr"])
+        combined = combined[combined["ttbr"] > 0]
+        self.df = (combined
                    .drop_duplicates(subset=["date", "currency"], keep="first")
                    .sort_values("date").reset_index(drop=True))
 

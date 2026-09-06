@@ -231,8 +231,15 @@ def _a3(wb, ctx):
     # Which rows have a usable rate. A row whose FX could not be resolved gets a
     # named blank, never a figure multiplied by a rate of zero.
     init_ok = (list(df["_init_ok"]) if "_init_ok" in df.columns else [True] * len(df))
-    end_ok = (list(df["_end_ok"]) if "_end_ok" in df.columns else [True] * len(df))
-    df = df.drop(columns=[c for c in ("_init_ok", "_end_ok") if c in df.columns])
+    # Peak and Closing Value are each gated on BOTH the period-end FX quote
+    # and the corresponding market price actually resolving - a missing
+    # annual high (or close) must blank its own cell even when FX is fine,
+    # never fall through to a formula that multiplies by an unresolved
+    # price's 0.0 placeholder.
+    peak_ok = (list(df["_peak_ok"]) if "_peak_ok" in df.columns else [True] * len(df))
+    close_ok = (list(df["_close_val_ok"]) if "_close_val_ok" in df.columns else [True] * len(df))
+    df = df.drop(columns=[c for c in ("_init_ok", "_peak_ok", "_close_val_ok")
+                          if c in df.columns])
     names = {"_symbol": "Ref: Symbol", "_qty": "Qty held at period end",
              "_vest_price_fc": "Vested/cost price (FC)", "_rate_vest": "TTBR - initial value",
              "_high_fc": "Annual high price (FC)", "_close_fc": "Period-end close (FC)",
@@ -259,8 +266,8 @@ def _a3(wb, ctx):
     for k in range(len(df)):
         i = first + k
         formulas = [(8, f"={Q}{i}*{VP}{i}*{RV}{i}", bool(init_ok[k])),
-                    (9, f"={Q}{i}*{HI}{i}*{RE}{i}", bool(end_ok[k])),
-                    (10, f"={Q}{i}*{CL}{i}*{RE}{i}", bool(end_ok[k]))]
+                    (9, f"={Q}{i}*{HI}{i}*{RE}{i}", bool(peak_ok[k])),
+                    (10, f"={Q}{i}*{CL}{i}*{RE}{i}", bool(close_ok[k]))]
         for col, f, usable in formulas:
             if usable:
                 c = ws.cell(row=i, column=col, value=f)
