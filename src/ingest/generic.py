@@ -182,23 +182,41 @@ def classify_plan(text: str) -> str:
     return "UNKNOWN"
 
 
-def to_number(v) -> float:
-    """Parse a broker's idea of a number: $1,234.56, (123), 1 234,56, '-'."""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
+def to_number(v, on_invalid: str = "zero") -> float:
+    """Parse a broker's idea of a number: $1,234.56, (123), 1 234,56, '-'.
+
+    `on_invalid` controls ONLY the case where a value was genuinely PRESENT
+    but failed to parse as a number - garbled text ("garbled$$"), a stray
+    footnote ("N/A - see attached"), or something that merely looks numeric
+    but isn't ("12.34.56"). The default, "zero", is the ONLY behaviour any
+    existing caller has ever seen - this parameter is purely additive, and
+    a caller that does not pass it is completely unaffected. Pass
+    on_invalid="nan" at a specific, tax-consequential call site to get NaN
+    instead, so a genuine parse failure can never be mistaken for a real
+    zero by the code that consumes it.
+
+    This is UNRELATED to a genuinely blank/absent value - None, NaN, pd.NA,
+    an empty or whitespace-only string, a bare "-"/"--", or "n/a"/"not
+    applicable" used as an explicit no-data marker. Those mean "nothing was
+    supplied here", a different and deliberate convention from a parse
+    failure, and they ALWAYS return 0.0 - in both modes, exactly as before.
+    """
+    invalid = float("nan") if on_invalid == "nan" else 0.0
+    if v is None or (isinstance(v, float) and pd.isna(v)) or v is pd.NA:
         return 0.0
     if isinstance(v, (int, float)):
         return float(v)
     s = str(v).strip()
-    if not s or s in {"-", "--", "n/a", "not applicable"}:
+    if not s or s.lower() in {"-", "--", "n/a", "not applicable"}:
         return 0.0
     neg = s.startswith("(") and s.endswith(")")
     s = re.sub(r"[^0-9.\-]", "", s.replace(",", ""))
     if not s or s in {"-", "."}:
-        return 0.0
+        return invalid
     try:
         f = float(s)
     except ValueError:
-        return 0.0
+        return invalid
     return -f if neg else f
 
 

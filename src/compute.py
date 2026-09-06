@@ -582,7 +582,7 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
         acno = str(acct["account_no"])
         acno = "" if acno.strip().lower() in ("nan", "none") else acno
         label = f"{broker} {acno}".strip() or str(broker)
-        cur, peak_inr, closing_inr = "USD", 0.0, 0.0
+        cur, peak_inr, closing_inr, balance_ok = "USD", 0.0, 0.0, True
         sub = pd.DataFrame()
         if not cash.empty:
             sub = cash[(cash["broker"] == broker)
@@ -598,13 +598,36 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
             sub = sub[(sub["date"] >= period.start) & (sub["date"] <= period.end)]
             if "currency" in sub and len(sub):
                 cur = sub["currency"].iloc[0]
-            vals = [(c["date"], float(c["balance_fc"])
-                     * _rate_or_flag(fx, register, c["date"], cur,
-                                     f"A2 balance {acno}", label, "cash.csv"))
-                    for _, c in sub.iterrows()]
-            peak_inr = max((v for _, v in vals), default=0.0)
-            end = [v for d, v in vals if d == period.end]
-            closing_inr = end[0] if end else (vals[-1][1] if vals else 0.0)
+            vals = []
+            for _, c in sub.iterrows():
+                bal = float(c["balance_fc"])
+                if bal != bal:
+                    # A balance that was PRESENT but failed to parse (e.g.
+                    # an unparseable cash.csv/ingested cell) must never be
+                    # read as a real zero - that would silently understate
+                    # this account's Schedule FA cash disclosure. The whole
+                    # account's Peak/Closing Balance are left unresolved
+                    # below rather than computed from only the dates that
+                    # DID parse, since the true peak could have been on
+                    # exactly the date that is missing.
+                    balance_ok = False
+                    register.blocker(
+                        INVALID_NUMERIC_FIELD, label,
+                        f"Cash balance for {c['date']:%d-%m-%Y} has an "
+                        "unparseable/invalid value and cannot be relied on. "
+                        "Peak and Closing Balance for this account are left "
+                        "unresolved rather than computed as if this date "
+                        "were a real zero balance.",
+                        "cash.csv",
+                        "Correct the balance in the source data and re-run.")
+                    continue
+                vals.append((c["date"], bal * _rate_or_flag(
+                    fx, register, c["date"], cur, f"A2 balance {acno}",
+                    label, "cash.csv")))
+            if balance_ok:
+                peak_inr = max((v for _, v in vals), default=0.0)
+                end = [v for d, v in vals if d == period.end]
+                closing_inr = end[0] if end else (vals[-1][1] if vals else 0.0)
 
         credited = 0.0
         if not events.empty:
@@ -629,8 +652,10 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
             "Account Number": acct.get("account_no", ""),
             "Status": acct.get("status", "Owner"),
             "Account Opening Date": acct.get("opening_date", ""),
-            "Peak Balance During the Period (Rs.)": round(peak_inr, 0),
-            "Closing Balance (Rs.)": round(closing_inr, 0),
+            "Peak Balance During the Period (Rs.)": (
+                round(peak_inr, 0) if balance_ok else ""),
+            "Closing Balance (Rs.)": (
+                round(closing_inr, 0) if balance_ok else ""),
             "Gross Amount Paid/Credited During the Period (Rs.)": round(credited, 0),
         })
     return pd.DataFrame(rows)
@@ -750,11 +775,28 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
                 "Lot matching",
                 "Correct or supply the acquisition cost in the source data "
                 "and re-run.")
+        # A sale price/proceeds of NaN is not the same as a resolved rate of
+        # zero either - explicit check, not truthiness. sale_price_fc
+        # carries a present-but-unparseable ingested price/proceeds figure
+        # through unchanged (e.g. a malformed "sales"/"closed_lot_gains"
+        # cell); a false Rs.0 consideration would understate or fabricate a
+        # loss exactly as a false Rs.0 cost would fabricate a gain.
+        sale_ok = m.sale_price_fc == m.sale_price_fc
+        if not sale_ok:
+            register.blocker(
+                INVALID_NUMERIC_FIELD, m.symbol,
+                f"Sale on {m.sold_on:%d-%m-%Y} has an unparseable sale "
+                "price or proceeds figure, so the consideration and "
+                "capital gain for this quantity cannot be computed and "
+                "are left blank rather than guessed.",
+                "Lot matching",
+                "Correct the sale price/proceeds in the source data and "
+                "re-run.")
         # A missing rate is not a rate of zero. Where either conversion has no
         # rate on file the rupee figures are NOT computed, because a cost of nil
         # would report the entire sale proceeds as gain - an error far larger and
         # far less visible than a blank cell beside a blocker.
-        computable = bool(rate_sale) and bool(rate_cost) and cost_ok
+        computable = bool(rate_sale) and bool(rate_cost) and cost_ok and sale_ok
         # Each rupee column is blanked against the rate IT actually needs, and
         # every rendering of this row - screen, API and workbook - applies the
         # same test:
@@ -773,8 +815,8 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
             "Nature of Gain": term,
             "Sale Price per Share (FC)": m.sale_price_fc,
             "FX Rate - Sale Date": rate_sale or "",
-            "Full Value of Consideration (Rs.)": (round(proceeds, 0) if rate_sale
-                                                  else ""),
+            "Full Value of Consideration (Rs.)": (
+                round(proceeds, 0) if (rate_sale and sale_ok) else ""),
             "Vested Price per Share (FC)": round(cost_fc_per_share, 6),
             "FX Rate - Vest Date": rate_cost or "",
             "Cost of Acquisition (Rs.)": (
@@ -797,7 +839,8 @@ def build_cg(matches, fx: FXTable, opts: ComputeOptions, period: Period,
             "FX Source - Cost": (q_cost.source_type if q_cost else "NONE"),
             "Computable": ("Yes" if computable
                            else ("No - invalid cost basis" if not cost_ok
-                                 else "No - FX unavailable")),
+                                 else ("No - invalid sale price/proceeds"
+                                       if not sale_ok else "No - FX unavailable"))),
             "Source Document": m.source_ref,
         })
     return pd.DataFrame(rows)

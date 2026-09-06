@@ -382,11 +382,22 @@ def _extract_pdf_sections(doc, profile, broker, rec):
             for i, r in t.df.reset_index(drop=True).iterrows():
                 as_at = _stmt_as_at(r)
                 shares = G.to_number(r.get("shares"))
-                cost_total = G.to_number(r.get("cost_total"))
+                # NaN, not a silent zero, when present-but-unparseable - a
+                # false Rs.0 acquisition cost would otherwise reach
+                # build_lots() as a real POSITION price. "not cost_total"
+                # is deliberately also true for NaN below (an explicit
+                # extra check, not relying on truthiness) so a malformed
+                # cost_total still falls through to the cost_per_share
+                # fallback exactly as a genuinely blank/zero one already
+                # did - the fallback is preserved, only defeated when BOTH
+                # figures are unparseable, at which point cost_total stays
+                # NaN and is picked up by the existing 1412859 price-NaN
+                # diagnostic once it reaches build_lots().
+                cost_total = G.to_number(r.get("cost_total"), on_invalid="nan")
                 if not shares or as_at is None:
                     continue
-                if not cost_total:
-                    cps = G.to_number(r.get("cost_per_share"))
+                if not cost_total or cost_total != cost_total:
+                    cps = G.to_number(r.get("cost_per_share"), on_invalid="nan")
                     cost_total = cps * shares
                 # Some brokers state each lot's own trade date beside the
                 # position. That is better evidence than the statement date, so
@@ -423,7 +434,10 @@ def _extract_pdf_sections(doc, profile, broker, rec):
                        else r.get("ending"))
                 cash.append({"date": as_at, "broker": broker,
                              "account_no": account,
-                             "balance_fc": G.to_number(bal),
+                             # NaN, not a silent zero, when the balance was
+                             # present but unparseable - see build_a2()'s
+                             # invalid-balance handling.
+                             "balance_fc": G.to_number(bal, on_invalid="nan"),
                              "currency": "USD", "source": t.coords(i)})
             continue
 
@@ -611,13 +625,25 @@ def _extract_pdf_sections(doc, profile, broker, rec):
                 d = _row_date(r.get("date"), cfg)
                 if not qty or d is None:
                     continue
-                price = G.to_number(r.get("price"))
-                credited = G.to_number(r.get("amount"))
+                # NaN, not a silent zero, when present-but-unparseable - a
+                # false Rs.0 price/proceeds would understate or fabricate a
+                # loss once it reaches build_lots()/build_cg(). NaN is
+                # explicitly excluded (never merely falsy) from the two
+                # checks below so a malformed price still falls through to
+                # the credited-amount fallback exactly as a genuinely
+                # blank/zero price already did - only when BOTH are
+                # unparseable does gross itself end up unresolved (NaN).
+                price = G.to_number(r.get("price"), on_invalid="nan")
+                credited = G.to_number(r.get("amount"), on_invalid="nan")
                 # Schedule FA and capital gains both want the GROSS consideration.
                 # A statement's cash credit is net of transaction fees, so the
                 # gross is quantity x price and the difference is disclosed.
-                gross = qty * price if price else credited
-                fee = round(gross - credited, 2) if (price and credited) else 0.0
+                price_ok = price == price
+                credited_ok = credited == credited
+                gross = qty * price if (price and price_ok) else credited
+                fee = (round(gross - credited, 2)
+                       if (price and price_ok and credited and credited_ok)
+                       else 0.0)
                 note = f"Sale reported without lot detail | {t.coords(i)}"
                 if abs(fee) >= 0.01:
                     note += (f" | gross {gross:,.2f} less fees {fee:,.2f} = credited "
@@ -642,8 +668,14 @@ def _extract_pdf_sections(doc, profile, broker, rec):
                 sold = _row_date(r.get("sold"), cfg)
                 if not qty or sold is None:
                     continue
-                proceeds = G.to_number(r.get("proceeds"))
-                cost = G.to_number(r.get("cost"))
+                # NaN, not a silent zero, for either when present-but-
+                # unparseable - a false Rs.0 cost or sale price would
+                # otherwise reach build_lots()/build_cg() as a real figure.
+                # Cost is caught there via the existing "stated" blank/NaN
+                # exclusion (a877a1b); sale price/proceeds via build_cg()'s
+                # sale_ok gate (this change).
+                proceeds = G.to_number(r.get("proceeds"), on_invalid="nan")
+                cost = G.to_number(r.get("cost"), on_invalid="nan")
                 sym = str(r.get("ticker") or symbol).strip().upper()
                 rows.append({
                     "date": sold, "broker": broker, "account_no": account,
@@ -664,8 +696,14 @@ def _extract_pdf_sections(doc, profile, broker, rec):
                     "symbol": r.get("ticker") or symbol,
                     "acquired": G.to_date(r.get("acquired")),
                     "shares": G.to_number(r.get("shares")),
-                    "cost_per_share": G.to_number(r.get("cost_per_share")),
-                    "cost_total": G.to_number(r.get("cost_total")),
+                    # NaN, not a silent zero, for the cost fields when
+                    # present-but-unparseable - this role does not yet feed
+                    # any event/computation (rec.holdings has no downstream
+                    # reader today), but keeping the same convention here
+                    # avoids a future consumer inheriting a false zero.
+                    "cost_per_share": G.to_number(r.get("cost_per_share"),
+                                                  on_invalid="nan"),
+                    "cost_total": G.to_number(r.get("cost_total"), on_invalid="nan"),
                     "source": t.coords(i),
                 })
             continue
@@ -952,9 +990,15 @@ def _extract_closed_lot_table(doc, profile, broker, rec):
             if not qty or sold is None:
                 continue
             acq = G.to_date(r.get(cols.get("acquired_date"))) if cols.get("acquired_date") else None
-            proceeds = G.to_number(r.get(cols.get("proceeds_fc")))
-            cost = G.to_number(r.get(cols.get("cost_fc")))
-            gain = (G.to_number(r.get(cols.get("gain_fc")))
+            # NaN, not a silent zero, for proceeds/cost/gain when present-
+            # but-unparseable - cost is caught downstream via the existing
+            # blank/NaN "stated" exclusion in build_lots() (a877a1b);
+            # proceeds via build_cg()'s new sale_ok gate. gain only feeds
+            # this table's own reconciliation note and broker_adj_gain_fc
+            # provenance, not the computed capital gain itself.
+            proceeds = G.to_number(r.get(cols.get("proceeds_fc")), on_invalid="nan")
+            cost = G.to_number(r.get(cols.get("cost_fc")), on_invalid="nan")
+            gain = (G.to_number(r.get(cols.get("gain_fc")), on_invalid="nan")
                     if cols.get("gain_fc") else proceeds - cost)
             ord_gain = (G.to_number(r.get(cols.get("ordinary_gain_fc")))
                         if cols.get("ordinary_gain_fc") else None)
@@ -964,7 +1008,13 @@ def _extract_closed_lot_table(doc, profile, broker, rec):
 
             # The report's own arithmetic must hold. It is never rewritten to
             # make it hold - a break is reported and the broker's figures stand.
-            broke = abs((proceeds - cost) - gain) > tol
+            # A NaN in any of the three (present-but-unparseable) is ALSO
+            # treated as a break - NaN comparisons are always False, so
+            # without this explicit check a malformed figure would silently
+            # pass this reconciliation test instead of failing it, which
+            # would be strictly worse than not checking at all.
+            broke = ((proceeds != proceeds) or (cost != cost) or (gain != gain)
+                     or abs((proceeds - cost) - gain) > tol)
             if broke:
                 notes.append({
                     "kind": "reconcile", "symbol": sym, "source": t.coords(i),
