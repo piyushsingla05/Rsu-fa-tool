@@ -1093,6 +1093,149 @@ def aggregate_explained(key, col, before_row, after_row, cols, digests, upgrades
     return d_key, d_col, moved
 
 
+#: Recorded, reviewed schema changes to INTERNAL (underscore-prefixed) audit
+#: columns only. Each entry: frame key -> {old column name: [new column
+#: name(s)]}. This is NOT a general escape hatch: every USER-FACING column
+#: (no leading "_") must still match the baseline by name and order exactly,
+#: with no exception. Only an internal column already recorded here may
+#: differ from the baseline, and only in the exact documented direction - a
+#: partial migration, or any internal-column change not listed here, still
+#: fails the frame outright. Entries stay here permanently as a record of
+#: why the migration was accepted, named by the commit that made it.
+INTERNAL_COLUMN_COMPAT = {
+    # f6a2329 "HARDEN: block silent zero-value tax inputs" - build_a3() split
+    # the single "did the FX rate resolve" flag into two independent gates,
+    # so Peak Value and Closing Value can blank independently on missing
+    # market data (Finding 5) rather than sharing one flag that only ever
+    # checked the FX side. No user-facing A3 column moved.
+    "a3": {"_end_ok": ["_peak_ok", "_close_val_ok"]},
+}
+
+
+def _reconcile_columns(key, base_cols, cur_cols):
+    """Decide whether `cur_cols` may stand in for `base_cols` on frame `key`.
+
+    Strict by default: identical column names in the identical order is
+    always accepted, on every frame, exactly as before this function existed.
+    The one thing this adds is that an INTERNAL (underscore-prefixed) column
+    difference is tolerated when, and only when, it exactly matches a
+    recorded entry in INTERNAL_COLUMN_COMPAT for this frame - every old name
+    removed must be a compat key, and every new name added must be exactly
+    the compat entry's replacement list for some removed key, with nothing
+    left over on either side.
+
+    A user-facing column that was added, removed, renamed or reordered is
+    NEVER tolerated here, regardless of INTERNAL_COLUMN_COMPAT - that always
+    fails, exactly as the original bare `cols != cols` check did.
+
+    Returns (ok, detail, common_cols):
+      ok           - True if cell-level comparison may proceed for this frame
+      detail       - a one-line explanation, for the report either way
+      common_cols  - column NAMES, in baseline order, safe to compare cell by
+                     cell: every user-facing column, unconditionally, plus
+                     every internal column present and unchanged on both
+                     sides. A column consumed by a recorded migration (on
+                     either side) is deliberately EXCLUDED from cell-level
+                     comparison - it holds different information across the
+                     migration (a coarser flag vs. two finer ones) - the
+                     migration is acknowledged as expected, not diffed.
+    """
+    base_user = [c for c in base_cols if not c.startswith("_")]
+    cur_user = [c for c in cur_cols if not c.startswith("_")]
+    if base_user != cur_user:
+        return False, "user-facing column set/order differs", []
+
+    base_int = [c for c in base_cols if c.startswith("_")]
+    cur_int = [c for c in cur_cols if c.startswith("_")]
+    removed = [c for c in base_int if c not in cur_int]
+    added = [c for c in cur_int if c not in base_int]
+    unchanged_int = [c for c in base_int if c in cur_int]
+
+    compat = INTERNAL_COLUMN_COMPAT.get(key, {})
+    unexplained_removed = []
+    consumed_added: set[str] = set()
+    for old in removed:
+        repls = compat.get(old)
+        # A recorded migration is only accepted whole: every one of its
+        # replacement columns must actually be present. A partial migration
+        # (only one of two expected new columns) or a bare disappearance
+        # (old column gone, nothing added at all) is NOT the documented
+        # change and is rejected exactly like any other unexplained removal.
+        if repls is None or any(r not in added for r in repls):
+            unexplained_removed.append(old)
+            continue
+        consumed_added.update(repls)
+    unexplained_added = [c for c in added if c not in consumed_added]
+    if unexplained_removed or unexplained_added:
+        return False, (
+            "internal column change is not on the recorded compatibility "
+            f"list: removed={unexplained_removed or removed} "
+            f"added={unexplained_added or added}"), []
+
+    if not removed and not added:
+        return True, "identical", base_user + unchanged_int
+    return True, (f"internal-only, recorded migration: {removed} -> {added}"
+                  ), base_user + unchanged_int
+
+
+def _reindex_rows(rows, orig_cols, want_cols):
+    """Every row in `rows` (aligned to `orig_cols`), re-aligned to `want_cols`.
+
+    Name-based, not positional - so a frame whose internal columns moved
+    position (or count) because of a recorded migration can still be
+    compared cell-by-cell on the columns both sides actually share.
+    """
+    idx = [orig_cols.index(c) for c in want_cols]
+    return [[r[i] for i in idx] for r in rows]
+
+
+def _a3_gate_consistency(rep, ctx):
+    """The Finding-5 gate, proved on the ACTUAL A3 rows this run produced.
+
+    Independent of the baseline entirely - this does not compare before vs.
+    after, it checks the current run's own A3 frame for internal consistency
+    between the internal `_peak_ok`/`_close_val_ok` flags build_a3() computed
+    and the user-facing Peak Value / Closing Value cells those flags gate
+    (src/compute.py build_a3(): "... if (end_ok and high_ok) else ''" and
+    "... if (end_ok and close_ok) else ''"). If build_a3() or excel_out.py's
+    reading of these flags ever drifted apart, this fails regardless of
+    whether any baseline row happens to be affected.
+    """
+    a3 = ctx.get("a3")
+    if a3 is None or not len(a3) or "_peak_ok" not in a3.columns:
+        rep.check(BLOCKED, "A3 Peak/Closing gate is internally consistent",
+                  "no A3 rows in this run, or _peak_ok/_close_val_ok absent")
+        return
+    # Rows for a symbol fully disposed during the period (build_a3()'s
+    # "reported" branch) never had a peak/close gate to begin with - they
+    # carry no _peak_ok/_close_val_ok at all (NaN once every row is combined
+    # into one frame) and print a plain 0, not a blank. They are not part of
+    # what this gate proves and are skipped rather than coerced into it.
+    gated = a3[a3["_peak_ok"].notna()]
+    peak_bad = [i for i, r in gated.iterrows()
+                if bool(r["_peak_ok"]) != (str(r["Peak Value of Investment "
+                                                  "During the Period (Rs.)"]) != "")]
+    close_bad = [i for i, r in gated.iterrows()
+                 if bool(r["_close_val_ok"]) != (str(r["Closing Value (Rs.)"]) != "")]
+    rep.check(PASS if not peak_bad else FAIL,
+              "Peak Value is blank exactly where _peak_ok is False, "
+              "numeric exactly where True",
+              "all rows consistent" if not peak_bad
+              else f"{len(peak_bad)} row(s) disagree: {peak_bad[:5]}")
+    rep.check(PASS if not close_bad else FAIL,
+              "Closing Value is blank exactly where _close_val_ok is False, "
+              "numeric exactly where True",
+              "all rows consistent" if not close_bad
+              else f"{len(close_bad)} row(s) disagree: {close_bad[:5]}")
+    n_peak_ok = int(gated["_peak_ok"].sum())
+    n_close_ok = int(gated["_close_val_ok"].sum())
+    rep.check(REPORT, "A3 market-data gate coverage this run",
+              f"Peak Value resolved {n_peak_ok}/{len(gated)} gated row(s), "
+              f"Closing Value resolved {n_close_ok}/{len(gated)} gated row(s) "
+              "- blanks are rows where the annual high or close is "
+              "genuinely missing, never a computed zero")
+
+
 def stage_7(rep, ctx, tmp):
     rep.stage(7, "NOTHING ELSE MOVED - EVERY FIGURE AGAINST THE PRE-FETCH BASELINE")
     if not BASELINE.exists():
@@ -1109,14 +1252,18 @@ def stage_7(rep, ctx, tmp):
         want = base["frames"].get(key)
         got = frame_digest(ctx[key]) if key in ctx else None
         cols = base["columns"].get(key)
-        if want is None or got is None or cols is None:
+        cur_cols = [str(c) for c in ctx[key].columns] if key in ctx else None
+        if want is None or got is None or cols is None or cur_cols is None:
             continue
-        if cols != [str(c) for c in ctx[key].columns] or len(want) != len(got):
+        ok, _detail, common = _reconcile_columns(key, cols, cur_cols)
+        if not ok or len(want) != len(got):
             continue
-        digests[key] = (want, got, cols)
+        want_r = _reindex_rows(want, cols, common)
+        got_r = _reindex_rows(got, cur_cols, common)
+        digests[key] = (want_r, got_r, common)
         if DEBUG:
-            _debug_rows(key, cols, want, got)
-        upgrades[key] = source_upgrades(key, cols, want, got)
+            _debug_rows(key, common, want_r, got_r)
+        upgrades[key] = source_upgrades(key, common, want_r, got_r)
 
     audit = []
     for key in COMPARED:
@@ -1125,14 +1272,24 @@ def stage_7(rep, ctx, tmp):
         if want is None or got is None:
             rep.check(FAIL, f"{key:<15} present in both runs", "frame missing")
             continue
-        if base["columns"][key] != [str(c) for c in ctx[key].columns]:
-            rep.check(FAIL, f"{key:<15} columns unchanged", "column set differs")
+        cols_before = base["columns"][key]
+        cols_after = [str(c) for c in ctx[key].columns] if key in ctx else []
+        ok, detail, common = _reconcile_columns(key, cols_before, cols_after)
+        if not ok:
+            rep.check(FAIL, f"{key:<15} columns unchanged", detail)
             continue
         if len(want) != len(got):
             rep.check(FAIL, f"{key:<15} row count unchanged",
                       f"{len(want)} -> {len(got)}")
             continue
-        cols = base["columns"][key]
+        if cols_before != cols_after:
+            rep.note(f"{key}: internal-audit-column migration accepted - "
+                     f"{detail}. These columns are never printed on the "
+                     "workbook and are excluded from the cell-level check "
+                     "below; every user-facing column is still compared.")
+        cols = common
+        want = _reindex_rows(want, cols_before, cols)
+        got = _reindex_rows(got, cols_after, cols)
         rows_up = upgrades.get(key, {})
         filled, upgraded, changed = 0, 0, []
         for i, (a, b) in enumerate(zip(want, got)):
@@ -1167,6 +1324,8 @@ def stage_7(rep, ctx, tmp):
                   else f"{len(changed)} ALTERED: {changed[:3]}")
         rep.check(PASS if not changed else FAIL,
                   f"{key:<15} unchanged except newly convertible cells", detail)
+
+    _a3_gate_consistency(rep, ctx)
 
     for kind, heading in (
             ("upgrade", "LEGITIMATE SOURCE UPGRADE: baseline SBI "
