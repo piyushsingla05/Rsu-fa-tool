@@ -597,9 +597,13 @@ of the five evidenced sales by **$15,406.66**.
 ## Web UI — a modular multi-tool application
 
 ```bash
-pip install fastapi uvicorn python-multipart
+pip install -r requirements.txt
 APP_PASSWORD='...' python3 -m src.web            # http://127.0.0.1:8000
 ```
+
+`requirements.txt` also documents one OS-level (non-pip) dependency:
+`poppler-utils`, for the `pdftotext` binary PDF broker statements are read
+through. Without it the process still starts; every PDF upload fails.
 
 The application is a neutral shell (`Workbench`, set `APP_NAME` to rename it)
 hosting independent tools. It owns sign-in, the sidebar and the static assets,
@@ -667,6 +671,28 @@ remains authoritative.
 Multi-user concurrency is not built, but nothing blocks it: jobs live behind
 `api.STORE` and identity behind `require_session`, so both can be replaced
 without the tax engine moving.
+
+**Production filesystem permissions.** `main()` (i.e. actually running the
+server, not merely importing this module) sets the process umask to `0o077`
+before doing anything else, so every job/upload/workbook directory and file
+this process creates defaults to owner-only (`0700`/`0600`) regardless of the
+host's own umask — those directories hold real client tax documents, and
+nothing about this application intends any of it to be group- or
+world-readable. Running the service under its own dedicated, low-privilege
+account (rather than a shared/shell account) remains a deployment-time choice
+this cannot enforce from inside the process.
+
+**Production session cookie.** The session cookie already carries `HttpOnly`
+and `SameSite=Strict`. It also now carries `Secure` automatically whenever the
+request reached the app over HTTPS directly, or via a reverse proxy that
+terminates TLS and forwards `X-Forwarded-Proto: https` (the standard nginx/
+Caddy/most-proxies behaviour) — the deployment target this app is meant for.
+A plain-HTTP dev run (this Codespace, the test suite) is unaffected: without
+either signal, the cookie is set exactly as before.
+
+**`/openapi.json` is disabled**, alongside the already-disabled `/docs` and
+`/redoc` — this is a private tool, not a published API, and its schema is not
+meant to be reachable by anyone who has not signed in.
 
 ### One presentation rule, everywhere
 

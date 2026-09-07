@@ -30,17 +30,36 @@ from .session import SESSION_COOKIE, SESSION_HOURS, check_password, new_token, v
 STATIC = Path(__file__).resolve().parent / "static"
 APP_NAME = os.environ.get("APP_NAME", "Workbench")
 
-app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None)
+# docs_url/redoc_url were already off; openapi_url=None additionally drops the
+# schema document itself (/openapi.json) - this is a private tool, not a
+# published API, and the schema is not meant to be reachable by anyone who
+# has not signed in.
+app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def _https(request: Request) -> bool:
+    """Whether this request reached the app over HTTPS.
+
+    True for a direct HTTPS connection, and also when a reverse proxy in
+    front of the app (which is how this is meant to be deployed) terminates
+    TLS itself and forwards X-Forwarded-Proto: https - the standard signal
+    nginx/Caddy/most proxies already send. False for a plain-HTTP dev/test
+    run, which is exactly when the session cookie must NOT carry Secure, or
+    the browser (and this project's own httpx-based test suite) would never
+    send it back and every session would silently break.
+    """
+    return (request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto", "").lower() == "https")
 
 
 # ---------------------------------------------------------------- sign-in
 @app.post("/api/login")
-def login(response: Response, password: str = Form(...)):
+def login(request: Request, response: Response, password: str = Form(...)):
     if not check_password(password):
         raise HTTPException(status_code=401, detail="Incorrect password")
     token, expiry = new_token()
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="strict",
-                        max_age=SESSION_HOURS * 3600)
+                        secure=_https(request), max_age=SESSION_HOURS * 3600)
     return {"ok": True, "expires": expiry}
 
 
@@ -110,6 +129,14 @@ MOUNTED = mount_tools()
 def main() -> None:
     import uvicorn
     from .session import password
+    # Every file and directory this process creates from here on - a job's
+    # uploads, its client master data, its workbook - defaults to owner-only
+    # (0700/0600), regardless of the host's own umask. Those directories hold
+    # real client tax documents; nothing about this application intends any
+    # of that to be group- or world-readable. Scoped to actually running the
+    # server (main()), not to importing this module, so nothing here affects
+    # test runs or programmatic use of the app.
+    os.umask(0o077)
     p = argparse.ArgumentParser(description=f"{APP_NAME} - analysis tools")
     p.add_argument("--host", default="127.0.0.1",
                    help="default 127.0.0.1 - bind wider only behind your own network")

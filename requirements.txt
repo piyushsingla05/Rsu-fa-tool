@@ -1,0 +1,18 @@
+# Minimal production dependencies - derived from the application's actual
+# import graph (src/), not from a full development environment. Versions are
+# pinned to what was verified end-to-end (Phase 3 E2E: real UBS statements
+# uploaded, run, all 13 working-paper sections read, workbook exported and
+# opened, through the live web app).
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32
+pandas==3.0.5
+openpyxl==3.1.5
+PyYAML==6.0.3
+
+# NOT a pip dependency, but required at the OS level: src/ingest/tabular.py
+# shells out to the `pdftotext` binary to read PDF broker statements. Without
+# it, every PDF upload fails even though the Python process starts fine.
+#   Debian/Ubuntu:  apt-get install -y poppler-utils
+#   RHEL/Fedora:    dnf install -y poppler-utils
+#   macOS (dev):    brew install poppler
