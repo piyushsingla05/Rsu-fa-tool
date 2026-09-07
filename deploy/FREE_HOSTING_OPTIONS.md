@@ -7,6 +7,11 @@ application has, not against "free" alone. Verified via live web search on
 provider's own current terms before committing to one, especially the
 region/capacity caveats noted below.
 
+**Decision made:** Oracle Cloud Always Free was selected — the host is
+provisioned and reachable as `rsu-tool` (Ubuntu 24.04 E2 Micro; see
+`deploy/RUNBOOK.md` §0). This document is retained as the record of why,
+not as an open question.
+
 ## The hard requirements (all must hold, not most)
 
 1. **Persistent filesystem** — `work/tax/` and `clients/` must survive

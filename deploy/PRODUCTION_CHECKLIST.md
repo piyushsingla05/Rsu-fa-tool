@@ -2,22 +2,30 @@
 
 Unchecked until executed against a real host. Nothing here has been marked
 done by this deployment kit itself — it is the checklist to work through
-once hosting exists, not a record of having done so.
+once hosting exists, not a record of having done so. This session has no
+SSH access to the target host, so nothing below could be verified live from
+here either — see `deploy/RUNBOOK.md` §0 for what the operator has reported
+as already provisioned on the current target (`rsu-tool`, Oracle Ubuntu
+24.04 E2 Micro) and still needs a live check, vs. what is genuinely
+outstanding.
 
-- [ ] Persistent Linux VM/server provisioned (not Codespaces, not a
-      container that resets) — see `deploy/RUNBOOK.md` §1–2, or
-      `deploy/FREE_HOSTING_OPTIONS.md` for a genuinely free option.
-- [ ] Python 3 + venv created, `pip install -r requirements.txt` run
-      (RUNBOOK §3).
+- [x] Persistent Linux VM/server provisioned — `rsu-tool` (Oracle Cloud
+      Always Free Ubuntu 24.04 E2 Micro). See `deploy/RUNBOOK.md` §1–2.
+- [ ] Python 3.12 + `.venv` confirmed to hold exactly `requirements.txt`
+      (reported already in place on `rsu-tool` — verify, don't recreate;
+      RUNBOOK §0/§3).
 - [ ] `poppler-utils` installed at the OS level, `pdftotext -v` verified
-      (RUNBOOK §4).
+      (reported already in place on `rsu-tool` — verify; RUNBOOK §0/§4).
 - [ ] Dedicated low-privilege service account created; application
       directory and `clients/` owned by it (RUNBOOK §5).
 - [ ] `work/tax/` confirmed to sit on durable disk, survives a restart
-      (RUNBOOK §6; validated live in smoke test item V).
-- [ ] `/etc/workbench/workbench.env` created, `chmod 600`, with real
-      **pinned** `APP_PASSWORD` and `APP_SECRET` (never left to
-      auto-generate) — RUNBOOK §7.
+      (reported already in place on `rsu-tool` — verify the restart
+      survives live; RUNBOOK §0/§6; validated live in smoke test item V).
+- [ ] Secured `.env` confirmed to hold real **pinned** `APP_PASSWORD` and
+      `APP_SECRET` (never left to auto-generate), mode 600, and
+      `workbench.service`'s `EnvironmentFile=` pointed at its real path
+      (reported already in place on `rsu-tool` — verify location and
+      contents, wire up the unit; RUNBOOK §0/§7).
 - [ ] systemd unit installed and enabled (`workbench.service`), confirmed
       **exactly one** Uvicorn worker, no `--workers` flag anywhere
       (RUNBOOK §8).

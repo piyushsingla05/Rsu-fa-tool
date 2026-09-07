@@ -9,6 +9,12 @@
 # your real deployment paths before installing this unit. See
 # deploy/RUNBOOK.md for the full walkthrough.
 #
+# PATH=/ExecStart= below already use .venv (dot-prefixed) to match what is
+# already provisioned on the current target host (rsu-tool) - substitute a
+# different path only if /opt/rsu-fa-tool or the venv location genuinely
+# differs there. Point EnvironmentFile= at wherever that host's existing
+# secured .env actually lives (RUNBOOK.md §0/§7).
+#
 # EXACTLY ONE worker: JobStore (src/tools/tax/api.py) is an in-memory,
 # single-process store. Do not add --workers, do not run a second instance
 # of this unit, and do not point a load balancer at more than one copy of
@@ -30,9 +36,9 @@ Type=simple
 User=workbench
 Group=workbench
 WorkingDirectory=/opt/rsu-fa-tool
-Environment=PATH=/opt/rsu-fa-tool/venv/bin:/usr/bin:/bin
+Environment=PATH=/opt/rsu-fa-tool/.venv/bin:/usr/bin:/bin
 EnvironmentFile=/etc/workbench/workbench.env
-ExecStart=/opt/rsu-fa-tool/venv/bin/python3 -m src.web --host 127.0.0.1 --port 8000
+ExecStart=/opt/rsu-fa-tool/.venv/bin/python3 -m src.web --host 127.0.0.1 --port 8000
 # --- end placeholders ---
 
 # Automatic restart: process failure AND the reboot case (After=network.target

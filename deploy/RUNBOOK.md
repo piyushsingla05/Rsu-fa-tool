@@ -1,10 +1,49 @@
 # Deployment runbook — Tax / Foreign Assets Working Paper
 
 This is the step-by-step procedure for Phase 4 (production deployment) once
-a real, persistent Linux host is available. Nothing in this document has
-been executed against a live server — no hosting has been provisioned, no
-domain chosen, no certificate issued. This is preparation only, so Phase 4
-can be carried out immediately once that access exists.
+a real, persistent Linux host is available. This is preparation from the
+repository side — this Codespace has no SSH access to any production host,
+so nothing below has been executed against a live server from here. This
+document stays host-agnostic (placeholder paths throughout) so it applies to
+any future host, but see §0 for what is already known/done on the current
+target.
+
+## 0. Status on the current target host (`rsu-tool`)
+
+The target is a dedicated Oracle Cloud Ubuntu 24.04 Always-Free E2 Micro
+instance, hostname `rsu-tool` — separate from, and unrelated to, the
+Flattrade trading-bot server. Per the operator, the following are already in
+place on that host and do **not** need to be redone (only verified — see
+`deploy/PRODUCTION_CHECKLIST.md`):
+
+- Python 3.12 installed (matches Ubuntu 24.04's default `python3`).
+- `poppler-utils` installed (`pdftotext -v` should already succeed — §4).
+- A `.venv` virtual environment already created with all packages from
+  `requirements.txt` installed. This runbook otherwise names the directory
+  `venv` throughout as a generic placeholder — on `rsu-tool` substitute
+  `.venv` (the dot-prefixed name already in use there) everywhere `venv`
+  appears below and in `deploy/workbench.service`'s `PATH=`/`ExecStart=`
+  lines. Confirm with `./.venv/bin/pip list` that it matches
+  `requirements.txt` (§3) rather than recreating it.
+- A secured environment file already exists (`.env`, mode 600). Before
+  installing `deploy/workbench.service`, confirm its actual path on the
+  host and either move it to `/etc/workbench/workbench.env` (the path the
+  shipped unit file's `EnvironmentFile=` expects) or edit that line in the
+  installed copy of the unit to match wherever it actually lives — the unit
+  will fail closed (refuse to start) if `EnvironmentFile=` points to a
+  path that doesn't exist, rather than silently running unauthenticated, so
+  this is safe to get wrong once and fix, not a security gap. Confirm it
+  still holds real, pinned (not auto-generated) `APP_PASSWORD`/`APP_SECRET`
+  values per §7 — this session cannot read that file to verify its contents,
+  only the operator can.
+- `work/tax/` already exists as a persistent directory on the host's real
+  disk (§6) — no manual creation needed; it is created automatically by the
+  application on first run regardless.
+
+Still to do on the host itself (none of this can be done from this
+Codespace — no hosting credentials or SSH access here): service account
+(§5), systemd unit install (§8), reverse proxy + DNS + TLS (§9–§11), client
+master data (§12), and the full smoke test (§13, `deploy/SMOKE_TEST.md`).
 
 **Architecture preserved throughout:** reverse proxy (HTTPS) → exactly one
 Uvicorn worker → FastAPI → the tax engine. `JobStore`
@@ -38,6 +77,10 @@ Substitute this path everywhere `/opt/rsu-fa-tool` appears below and in
 
 ## 3. Python environment
 
+On `rsu-tool` this is already done (§0) as `.venv`, not `venv` — verify with
+`./.venv/bin/pip list` against `requirements.txt` rather than recreating it.
+The steps below are for a fresh host.
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y python3 python3-venv python3-pip
@@ -56,6 +99,9 @@ openpyxl, PyYAML) — nothing from a wider development environment.
 PDF broker statements are read via the external `pdftotext` binary
 (`src/ingest/tabular.py`), not a Python library. The Python process starts
 fine without it; every PDF upload then fails.
+
+On `rsu-tool` this is already installed (§0) — just run the verify command
+below to confirm.
 
 ```bash
 sudo apt-get install -y poppler-utils      # Debian/Ubuntu
@@ -102,7 +148,9 @@ job's uploaded documents and generated workbook for the life of that job
 close — this retention logic is unchanged from Phase 2 and needs no
 reconfiguration).
 
-For this to actually be "persistent" in the production sense:
+On `rsu-tool` this directory already exists as persistent storage (§0). For
+this to actually be "persistent" in the production sense (verify these hold
+on the existing directory, don't just assume):
 
 - It must live on the VM's real, durable disk — not a container overlay
   that gets discarded on redeploy, not a tmpfs mount.
@@ -118,6 +166,13 @@ For this to actually be "persistent" in the production sense:
   unchanged, and is exactly what makes a restart safe for `work/tax`.
 
 ## 7. Environment variables
+
+On `rsu-tool` a secured `.env` already exists (§0) — confirm its location and
+contents (real, pinned `APP_PASSWORD`/`APP_SECRET`, mode 600) rather than
+generating a new one, then point `deploy/workbench.service`'s
+`EnvironmentFile=` at wherever it actually lives (moving it to the path
+below is one option, editing the unit to match is the other). The steps
+below are for a fresh host with no environment file yet.
 
 Copy `.env.example` to the real environment file **outside the git
 repository**:

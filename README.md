@@ -698,9 +698,14 @@ meant to be reachable by anyone who has not signed in.
 kit — a systemd unit (exactly one Uvicorn worker), example Caddy/nginx
 reverse-proxy configs, an `.env.example` for `APP_PASSWORD`/`APP_SECRET`, a
 full step-by-step runbook, a genuinely-free-hosting evaluation, and the
-production checklist/smoke test to run once a real host exists. None of it
-has been applied anywhere; it exists so Phase 4 can be executed the moment
-hosting is available, without re-deriving any of this from scratch.
+production checklist/smoke test to run once a real host exists. A target
+host (`rsu-tool`, Oracle Cloud Always Free Ubuntu 24.04 E2 Micro) is now
+provisioned with Python 3.12, `poppler-utils`, a `.venv` with dependencies
+installed, and a secured `.env`; the remaining steps (service account,
+systemd unit, reverse proxy, DNS, TLS, client data, smoke test) still need
+to be carried out on that host directly — see `deploy/RUNBOOK.md` §0. None
+of it has been applied from this repository/Codespace, which has no SSH
+access to that host.
 
 ### One presentation rule, everywhere
 
