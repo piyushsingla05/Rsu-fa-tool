@@ -23,6 +23,7 @@ the job directory, and nothing leaves the machine.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import shutil
 import threading
 import uuid
@@ -39,6 +40,8 @@ from ...models import Period
 from ...run import DEFAULT_FX, DEFAULT_GOOGLE_FX, DEFAULT_MARKET, ROOT, build_context, prepare
 
 WORK_ROOT = ROOT / "work" / "tax"   # this tool's jobs, nobody else's
+
+log = logging.getLogger(__name__)
 
 # state machine
 NEW, READY, RUNNING, DONE, FAILED = "new", "ready", "running", "done", "failed"
@@ -189,11 +192,89 @@ class JobStore:
             self.close(jid)
         return len(gone)
 
+    def reconcile_orphans(self) -> dict:
+        """Purge job directories left on disk by a prior process.
+
+        Called once at startup, when the in-memory registry is necessarily
+        empty - so any directory under WORK_ROOT that does not belong to a
+        job this instance already knows about is an orphan of a process that
+        exited without closing its jobs. Nothing about a job's `created`
+        timestamp survives a restart, so the directory's own mtime (which a
+        filesystem updates whenever an entry is added to or removed from it -
+        i.e. whenever a document was uploaded or the job was touched) stands
+        in for it, and the SAME JOB_TTL a live job is held to decides whether
+        it is purged. This is the one retention policy the tool has; nothing
+        new is introduced here.
+
+        Never raises - a cleanup failure (a permissions problem, a directory
+        that vanishes mid-scan, WORK_ROOT missing entirely) must not prevent
+        the application from starting, so every failure is caught, recorded
+        under "skipped"/"error" and left for the log line the caller prints.
+        """
+        result: dict = {"scanned": 0, "purged": [], "retained": [], "skipped": []}
+        try:
+            if not WORK_ROOT.exists():
+                return result
+            entries = list(WORK_ROOT.iterdir())
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
+
+        now = dt.datetime.utcnow()
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    result["skipped"].append(entry.name)
+                    continue
+                if entry.name in self._jobs:
+                    # An in-memory job is never touched here, regardless of
+                    # its directory's mtime - only purge_expired() (via its
+                    # own TTL check on Job.created) ever closes a live job.
+                    result["retained"].append(entry.name)
+                    continue
+                result["scanned"] += 1
+                age = now - dt.datetime.utcfromtimestamp(entry.stat().st_mtime)
+                if age > JOB_TTL:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    result["purged"].append(entry.name)
+                else:
+                    result["retained"].append(entry.name)
+            except Exception as exc:
+                result["skipped"].append(f"{entry.name} ({type(exc).__name__}: {exc})")
+        return result
+
 
 STORE = JobStore()
 
+# Orphaned job directories from a prior process (killed, crashed, or simply
+# restarted) cannot be reconciled against an in-memory registry that no
+# longer exists, so this runs once, here, before the store serves any
+# request. A failure here must never stop the application from starting.
+try:
+    _startup_cleanup = STORE.reconcile_orphans()
+    if _startup_cleanup.get("error"):
+        log.warning("tax job store startup cleanup failed: %s", _startup_cleanup["error"])
+    elif _startup_cleanup["scanned"] or _startup_cleanup["skipped"]:
+        log.info(
+            "tax job store startup cleanup: %d orphan(s) scanned, %d purged, "
+            "%d retained (not yet expired), %d skipped",
+            _startup_cleanup["scanned"], len(_startup_cleanup["purged"]),
+            len(_startup_cleanup["retained"]), len(_startup_cleanup["skipped"]))
+except Exception as exc:                            # belt and braces: never block startup
+    log.warning("tax job store startup cleanup failed: %s: %s", type(exc).__name__, exc)
+
 
 # ----------------------------------------------------------------------
+def has_documents(job: Job) -> bool:
+    """Whether at least one source document has been uploaded to this job.
+
+    The same check run_job() already makes before deciding whether to pass a
+    doc_dir into prepare() - exposed so a route can refuse to run a job with
+    nothing to read before any engine code is touched.
+    """
+    return any(job.uploads.glob("*"))
+
+
 def analyse_upload(path: Path) -> dict:
     """What the identifier makes of one file, before any run.
 
@@ -227,7 +308,7 @@ def run_job(job: Job) -> Job:
         opts = ComputeOptions(
             a3_granularity="entity" if job.entity_wise else "lot",
             limited_statement=job.limited_statement)
-        docs = job.uploads if any(job.uploads.glob("*")) else None
+        docs = job.uploads if has_documents(job) else None
         result, fx, md, register = prepare(
             job.client_dir, job.period, DEFAULT_FX, DEFAULT_MARKET, opts,
             doc_dir=docs,

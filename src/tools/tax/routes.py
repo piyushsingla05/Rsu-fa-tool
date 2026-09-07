@@ -120,6 +120,9 @@ def run(job_id: str, _: str = Depends(require_session)):
     changes no client code.
     """
     job = _job(job_id)
+    if not api.has_documents(job):
+        raise HTTPException(status_code=400,
+                            detail="Add at least one source document before running.")
     api.run_job(job)
     if job.state == api.FAILED:
         return JSONResponse(status_code=500,

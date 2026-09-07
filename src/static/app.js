@@ -22,16 +22,37 @@ let TOOLS = [];
 let CUR = { tool: null, section: null };
 
 /* ---------------------------------------------------------------- transport */
+const TIMEOUT_MARK = "__request_timeout__";
+
+/* `timeoutMs` is an optional extra key on opts, not a fetch() option - pulled
+ * out here so a slow request (the run endpoint, in particular) fails with a
+ * distinguishable, catchable error instead of leaving the caller waiting on
+ * an indefinite spinner with no way to tell "still working" from "hung". */
 async function call(url, opts = {}) {
-  const r = await fetch(url, { credentials: "same-origin", ...opts });
-  if (r.status === 401) { showLogin(); throw new Error("Sign in required"); }
-  if (!r.ok) {
-    let d = "";
-    try { d = (await r.json()).detail || ""; } catch (e) { d = await r.text(); }
-    throw new Error(d || `${r.status}`);
+  const { timeoutMs, ...rest } = opts;
+  let signal = rest.signal;
+  let timer = null;
+  if (timeoutMs) {
+    const ctrl = new AbortController();
+    signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
   }
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("json") ? r.json() : r.text();
+  try {
+    const r = await fetch(url, { credentials: "same-origin", ...rest, signal });
+    if (r.status === 401) { showLogin(); throw new Error("Sign in required"); }
+    if (!r.ok) {
+      let d = "";
+      try { d = (await r.json()).detail || ""; } catch (e) { d = await r.text(); }
+      throw new Error(d || `${r.status}`);
+    }
+    const ct = r.headers.get("content-type") || "";
+    return ct.includes("json") ? r.json() : r.text();
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(TIMEOUT_MARK);
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 const form = (obj) => {
   const f = new FormData();
@@ -225,6 +246,14 @@ const TaxTool = {
   API: "/api/tools/tax",
   job: null,
   counts: { Blocker: 0, Review: 0, Note: 0 },
+  // A run in flight for this job id, so navigating away from Processing and
+  // back cannot fire a second POST /run while the first has not returned.
+  runInFlight: null,
+  // Generous relative to the "seconds to a minute" a run normally takes -
+  // long enough that a real run essentially never trips it, short enough
+  // that a hung request does not leave the operator staring at a spinner
+  // indefinitely with no explanation.
+  RUN_TIMEOUT_MS: 120000,
 
   needsJob(section) {
     return !["documents"].includes(section);
@@ -445,31 +474,100 @@ const TaxTool = {
     st.style.marginTop = "14px";
     c.appendChild(st);
     const btn = el("button", "btn", j.run_count ? "Re-run" : "Run");
-    btn.disabled = !j.documents.length;
+    const busy = TaxTool.runInFlight === j.id;
+    btn.disabled = !j.documents.length || busy;
     btn.style.marginTop = "14px";
-    btn.onclick = async () => {
-      btn.disabled = true;
-      st.innerHTML = "";
-      const b = banner("ok", "");
-      b.innerHTML = '<span class="spin"></span>Computing — reading documents, '
-        + 'resolving FX, building the workbook…';
-      st.appendChild(b);
-      try {
-        const res = await call(`${TaxTool.API}/jobs/${j.id}/run`, { method: "POST" });
-        TaxTool.job = res.job;
-        await TaxTool.loadCounts();
-        go("tax", "summary");
-      } catch (err) {
-        st.innerHTML = "";
-        st.appendChild(banner("err", "The run did not complete: " + err.message));
-        btn.disabled = false;
-      }
-    };
+    btn.onclick = () => TaxTool.startRun(j.id, btn, st);
     c.appendChild(btn);
-    if (j.state === "done") {
+    if (busy) {
+      st.appendChild(TaxTool.processingBanner());
+    } else if (j.state === "done") {
       st.appendChild(banner("ok", j.message));
     }
     panel.appendChild(c);
+  },
+
+  processingBanner() {
+    const b = banner("ok", "");
+    b.innerHTML = '<span class="spin"></span>Processing documents — reading '
+      + 'documents, resolving FX, building the workbook. This can take a '
+      + 'little while for a large document set; the page will update as '
+      + 'soon as it finishes.';
+    return b;
+  },
+
+  async startRun(jobId, btn, st) {
+    // Re-entrancy guard: a duplicate click, or a second render of this same
+    // panel while the first request is still outstanding, must not start a
+    // second run for the same job.
+    if (TaxTool.runInFlight === jobId) return;
+    TaxTool.runInFlight = jobId;
+    btn.disabled = true;
+    st.innerHTML = "";
+    st.appendChild(TaxTool.processingBanner());
+    try {
+      const res = await call(`${TaxTool.API}/jobs/${jobId}/run`,
+        { method: "POST", timeoutMs: TaxTool.RUN_TIMEOUT_MS });
+      TaxTool.runInFlight = null;
+      TaxTool.job = res.job;
+      await TaxTool.loadCounts();
+      go("tax", "summary");
+    } catch (err) {
+      TaxTool.runInFlight = null;
+      st.innerHTML = "";
+      if (err.message === TIMEOUT_MARK) {
+        st.appendChild(TaxTool.timeoutBanner(jobId, btn, st));
+      } else {
+        st.appendChild(banner("err", "The run did not complete: " + err.message));
+      }
+      btn.disabled = !(TaxTool.job && TaxTool.job.documents.length);
+    }
+  },
+
+  // On a client-side timeout the request may well still be running on the
+  // server - v1's run is a single synchronous call, so there is nothing to
+  // cancel server-side and no way yet to know the outcome. Resubmitting
+  // blindly could start a second, overlapping run, so the operator is given
+  // a way to find out what actually happened (the existing status endpoint,
+  // untouched by this change) rather than being told to just try again.
+  timeoutBanner(jobId, btn, st) {
+    const wrap = el("div");
+    wrap.appendChild(banner("warn",
+      "Processing is taking longer than expected. It may still be running "
+      + "on the server — check its status before running again, rather than "
+      + "resubmitting."));
+    const row = el("div", "row");
+    row.style.marginTop = "8px";
+    const check = el("button", "btn ghost", "Check status");
+    check.onclick = async () => {
+      check.disabled = true;
+      try {
+        const s = await call(`${TaxTool.API}/jobs/${jobId}/status`);
+        if (s.state === "running") {
+          st.innerHTML = "";
+          st.appendChild(TaxTool.processingBanner());
+          TaxTool.runInFlight = jobId;
+          btn.disabled = true;
+        } else if (s.state === "done") {
+          TaxTool.job = await call(`${TaxTool.API}/jobs/${jobId}`);
+          await TaxTool.loadCounts();
+          go("tax", "summary");
+        } else {
+          st.innerHTML = "";
+          st.appendChild(banner(s.state === "failed" ? "err" : "warn",
+            s.message || `Job status: ${s.state}`));
+          btn.disabled = !(TaxTool.job && TaxTool.job.documents.length);
+        }
+      } catch (err) {
+        st.innerHTML = "";
+        st.appendChild(banner("err", "Could not check status: " + err.message));
+      } finally {
+        check.disabled = false;
+      }
+    };
+    row.appendChild(check);
+    wrap.appendChild(row);
+    return wrap;
   },
 
   renderExport(panel) {
