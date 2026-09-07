@@ -1,0 +1,37 @@
+# Example nginx reverse-proxy configuration - an alternative to Caddy for
+# operators who already standardise on nginx.
+#
+# Unlike Caddy, nginx does NOT set forwarded headers automatically and does
+# NOT provision TLS certificates itself - both are done explicitly below /
+# via certbot. workbench.example.com is a PLACEHOLDER - replace it with your
+# real domain. See deploy/RUNBOOK.md for the full walkthrough.
+#
+# Install (Debian/Ubuntu):
+#   sudo apt-get install -y nginx certbot python3-certbot-nginx
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/workbench
+#   sudo ln -s /etc/nginx/sites-available/workbench /etc/nginx/sites-enabled/
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d workbench.example.com   # obtains + auto-configures HTTPS
+# certbot rewrites this file to add the certificate/listen-443 block and
+# sets up automatic renewal (a systemd timer/cron it installs itself).
+
+server {
+    listen 80;
+    server_name workbench.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+
+        # Required: without these, the app sees every request as plain HTTP
+        # from 127.0.0.1, and the Secure-cookie logic (src/web.py:_https())
+        # will never see a request as HTTPS even after certbot adds TLS.
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}

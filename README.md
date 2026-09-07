@@ -694,6 +694,14 @@ either signal, the cookie is set exactly as before.
 `/redoc` — this is a private tool, not a published API, and its schema is not
 meant to be reachable by anyone who has not signed in.
 
+**Deploying to a real server.** `deploy/` holds a ready-to-apply deployment
+kit — a systemd unit (exactly one Uvicorn worker), example Caddy/nginx
+reverse-proxy configs, an `.env.example` for `APP_PASSWORD`/`APP_SECRET`, a
+full step-by-step runbook, a genuinely-free-hosting evaluation, and the
+production checklist/smoke test to run once a real host exists. None of it
+has been applied anywhere; it exists so Phase 4 can be executed the moment
+hosting is available, without re-deriving any of this from scratch.
+
 ### One presentation rule, everywhere
 
 **A rate of nil is not a rate, and neither is a figure converted at one.**

@@ -1,0 +1,62 @@
+# systemd unit for the Tax / Foreign Assets Working Paper application.
+#
+# Install:  sudo cp deploy/workbench.service /etc/systemd/system/workbench.service
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now workbench
+#
+# Every placeholder path/name below (/opt/rsu-fa-tool, the "workbench" user,
+# /etc/workbench/workbench.env) is exactly that - a placeholder. Substitute
+# your real deployment paths before installing this unit. See
+# deploy/RUNBOOK.md for the full walkthrough.
+#
+# EXACTLY ONE worker: JobStore (src/tools/tax/api.py) is an in-memory,
+# single-process store. Do not add --workers, do not run a second instance
+# of this unit, and do not point a load balancer at more than one copy of
+# it - a second process would have its own empty, disconnected JobStore.
+
+[Unit]
+Description=Workbench - Tax / Foreign Assets Working Paper
+After=network.target
+# Uncomment if this host also runs the reverse proxy and the proxy service
+# depends on this being up first is NOT required here - the proxy can start
+# independently and will simply fail requests until this unit is Active.
+# Wants=network-online.target
+# After=network-online.target
+
+[Service]
+Type=simple
+
+# --- placeholders: substitute for your real deployment ---
+User=workbench
+Group=workbench
+WorkingDirectory=/opt/rsu-fa-tool
+Environment=PATH=/opt/rsu-fa-tool/venv/bin:/usr/bin:/bin
+EnvironmentFile=/etc/workbench/workbench.env
+ExecStart=/opt/rsu-fa-tool/venv/bin/python3 -m src.web --host 127.0.0.1 --port 8000
+# --- end placeholders ---
+
+# Automatic restart: process failure AND the reboot case (After=network.target
+# above plus `systemctl enable` gets it started on boot; Restart= here covers
+# it coming back after a crash or an OOM kill without a reboot).
+Restart=on-failure
+RestartSec=3
+
+# Defence in depth alongside the application's own os.umask(0o077) (set in
+# main() at startup) - belt and braces, not a substitute for it.
+UMask=0077
+
+# Standard, low-risk sandboxing. NOT ProtectSystem=strict here deliberately:
+# this service writes under its own WorkingDirectory (work/tax) and a
+# stricter policy would need an explicit ReadWritePaths= for that exact
+# path, which is safer to add deliberately once yours is confirmed than to
+# ship here as an unverified guess.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# Sent to stdout/stderr, captured by the journal - `journalctl -u workbench`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=workbench
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# Example Caddy reverse-proxy configuration.
+#
+# workbench.example.com below is a PLACEHOLDER - replace it with your real
+# domain/subdomain before use. This file does not make HTTPS active by
+# itself; it only takes effect once installed on a real server with a real
+# domain pointed at it. See deploy/RUNBOOK.md for the full walkthrough,
+# including deploy/FREE_HOSTING_OPTIONS.md for a genuinely free domain if
+# you don't already have one.
+#
+# Caddy's reverse_proxy already sets X-Forwarded-For, X-Forwarded-Proto and
+# X-Forwarded-Host correctly by default - nothing extra is needed for the
+# app's Secure-cookie logic (src/web.py:_https()) to see the right scheme.
+#
+# Install:  sudo cp deploy/Caddyfile.example /etc/caddy/Caddyfile
+#           sudo systemctl restart caddy
+# Caddy then requests and renews a Let's Encrypt certificate for the domain
+# automatically - no certbot, no manual renewal, as long as DNS for the
+# domain already points at this server's public IP and ports 80+443 are
+# reachable from the internet.
+
+workbench.example.com {
+    reverse_proxy 127.0.0.1:8000
+
+    # Optional but recommended: a couple of standard hardening headers.
+    # Nothing here changes anything the application itself does.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}
