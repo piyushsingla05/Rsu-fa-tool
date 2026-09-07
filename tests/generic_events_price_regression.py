@@ -76,7 +76,8 @@ def is_nan(x):
 
 class _Rec:
     """Minimal stand-in for the rec object _extract_events() writes into."""
-    pass
+    def __init__(self):
+        self.invalid_quantities = []
 
 
 def make_doc(rows, price_col="Price", cost_col=None):
@@ -141,8 +142,9 @@ cases = [
 for label, row in cases:
     ev = run_extract([row])
     if label == "malformed quantity":
-        check(len(ev) == 0, f"{label}: row silently omitted (qty guard, out of "
-              "this fix's scope, unchanged pre-existing behaviour)",
+        check(len(ev) == 0, f"{label}: row excluded, not fabricated as a "
+              "zero-quantity event (the visible diagnostic this now raises "
+              "is covered by tests/malformed_quantity_regression.py)",
               f"{len(ev)} row(s)")
         continue
     check(len(ev) == 1, f"{label}: exactly one event row produced", f"{len(ev)} row(s)")

@@ -27,6 +27,7 @@ from .models import (
 )
 from .review import Register, UNVERIFIED_FX
 from .review import CG_CONTROL_TOTAL, CG_SOURCE_PRECEDENCE, STALE_FX
+from .review import INVALID_NUMERIC_FIELD
 from .review import Severity
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -273,6 +274,32 @@ def flag_closed_lot_reports(sources, register: Register):
                 "Reconcile the report to its summary line before filing.")
 
 
+def flag_invalid_quantities(sources, register: Register):
+    """A quantity/shares cell that was present but failed to parse.
+
+    extract.py never drops such a row silently and never treats it as a real
+    zero - it excludes the row from every downstream figure (the holding, a
+    transfer, a disposal, a perquisite adjustment) and records what it saw on
+    the SourceRecord instead, exactly like the existing recon_breaks pattern
+    above. This turns each of those into a visible, actionable register entry
+    naming the broker, the event/role, the source coordinates and the raw
+    value that could not be parsed.
+    """
+    for rec in sources:
+        for iv in (getattr(rec, "invalid_quantities", None) or []):
+            register.blocker(
+                INVALID_NUMERIC_FIELD, iv.get("symbol", ""),
+                f"A {iv.get('role', '')} row for "
+                f"{iv.get('event') or 'this event'} has an unparseable/"
+                f"invalid quantity ({iv.get('raw', '')}) and has been "
+                "excluded rather than treated as zero or guessed. Any "
+                "holding, transfer, disposal or perquisite figure that would "
+                "have included this row is understated until this is "
+                "corrected.",
+                iv.get("broker", ""),
+                "Correct the quantity in the source data and re-run.")
+
+
 def flag_equity_plan_evidence(sources, register: Register, period=None):
     """Disclose what a statement says about the plan but does NOT put in the account.
 
@@ -398,6 +425,7 @@ def ingest_documents(doc_dir: Path, register: Register, period=None):
                 "Columns present in the source but not mapped: " + ", ".join(cols[:10]),
                 f, "Confirm nothing material was left behind.")
 
+    flag_invalid_quantities(sources, register)
     flag_closed_lot_reports(sources, register)
     flag_equity_plan_evidence(sources, register, period)
     kept = resolve_capital_gain_sources(frames, sources, register)

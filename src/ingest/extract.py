@@ -72,6 +72,9 @@ class SourceRecord:
     google_fx: object = None     # a returned Google Finance FX fallback table
     exercises: list = field(default_factory=list)       # option exercises stated
     unvested_awards: list = field(default_factory=list)  # disclosed, never held
+    invalid_quantities: list = field(default_factory=list)  # present-but-unparseable
+                                                             # quantity/shares, excluded
+                                                             # from every downstream figure
 
     @property
     def coverage(self) -> str:
@@ -381,7 +384,19 @@ def _extract_pdf_sections(doc, profile, broker, rec):
             carry_lot = bool(rules.get("position_carries_lot_date"))
             for i, r in t.df.reset_index(drop=True).iterrows():
                 as_at = _stmt_as_at(r)
-                shares = G.to_number(r.get("shares"))
+                # NaN, not a silent zero, when present-but-unparseable - a
+                # malformed shares cell must never be dropped exactly like a
+                # genuinely blank one (see the invalid_quantities diagnostic
+                # below), nor silently treated as a real zero-share position.
+                shares = G.to_number(r.get("shares"), on_invalid="nan")
+                if shares != shares:
+                    rec.invalid_quantities.append({
+                        "role": "holdings_as_acquisition", "event": "POSITION",
+                        "symbol": str(r.get("ticker") or symbol).strip().upper(),
+                        "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("shares")),
+                    })
+                    continue
                 # NaN, not a silent zero, when present-but-unparseable - a
                 # false Rs.0 acquisition cost would otherwise reach
                 # build_lots() as a real POSITION price. "not cost_total"
@@ -475,7 +490,18 @@ def _extract_pdf_sections(doc, profile, broker, rec):
         # ---- stock option exercises: the perquisite, stated by the broker ----
         if role == "option_exercises":
             for i, r in t.df.reset_index(drop=True).iterrows():
-                qty = G.to_number(r.get("qty"))
+                # NaN, not a silent zero, when present-but-unparseable - a
+                # malformed exercise quantity must be flagged rather than
+                # dropped, since it defeats the exercise-FMV-as-cost
+                # perquisite-double-tax fix that matches on this quantity.
+                qty = G.to_number(r.get("qty"), on_invalid="nan")
+                if qty != qty:
+                    rec.invalid_quantities.append({
+                        "role": "option_exercises", "event": "OPTION_EXERCISE",
+                        "symbol": symbol, "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("qty")),
+                    })
+                    continue
                 on = _row_date(r.get("exercise_date"), cfg)
                 if not qty or on is None:
                     continue
@@ -492,7 +518,14 @@ def _extract_pdf_sections(doc, profile, broker, rec):
         # ---- unvested awards: disclosed, never a holding ----
         if role == "unvested_awards":
             for i, r in t.df.reset_index(drop=True).iterrows():
-                n = G.to_number(r.get("unvested"))
+                n = G.to_number(r.get("unvested"), on_invalid="nan")
+                if n != n:
+                    rec.invalid_quantities.append({
+                        "role": "unvested_awards", "event": "UNVESTED_AWARD",
+                        "symbol": symbol, "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("unvested")),
+                    })
+                    continue
                 if not n:
                     continue
                 unvested.append({
@@ -552,8 +585,19 @@ def _extract_pdf_sections(doc, profile, broker, rec):
         if role == "transfers":
             direction = cfg.get("direction", "IN")
             for i, r in t.df.reset_index(drop=True).iterrows():
-                qty = G.to_number(r.get("qty"))
+                # NaN, not a silent zero, when present-but-unparseable - a
+                # dropped transfer quantity would silently break the FA-A2/A3
+                # cross-broker quantity chain build_cross_broker() walks.
+                qty = G.to_number(r.get("qty"), on_invalid="nan")
                 d = _row_date(r.get("date"), cfg)
+                if qty != qty:
+                    rec.invalid_quantities.append({
+                        "role": "transfers", "event": f"TRANSFER_{direction}",
+                        "symbol": str(r.get("ticker") or symbol).strip().upper(),
+                        "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("qty")),
+                    })
+                    continue
                 if not qty or d is None:
                     continue
                 transfers.append({
@@ -621,8 +665,19 @@ def _extract_pdf_sections(doc, profile, broker, rec):
         # ---- disposals with proceeds but no lot detail ----
         if role == "sales":
             for i, r in t.df.reset_index(drop=True).iterrows():
-                qty = G.to_number(r.get("qty"))
+                # NaN, not a silent zero, when present-but-unparseable - this
+                # is a SELL, and a dropped/zeroed disposal quantity would
+                # understate the holding without any trace.
+                qty = G.to_number(r.get("qty"), on_invalid="nan")
                 d = _row_date(r.get("date"), cfg)
+                if qty != qty:
+                    rec.invalid_quantities.append({
+                        "role": "sales", "event": "SELL",
+                        "symbol": str(r.get("ticker") or symbol).strip().upper(),
+                        "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("qty")),
+                    })
+                    continue
                 if not qty or d is None:
                     continue
                 # NaN, not a silent zero, when present-but-unparseable - a
@@ -663,9 +718,20 @@ def _extract_pdf_sections(doc, profile, broker, rec):
             for i, r in t.df.reset_index(drop=True).iterrows():
                 # A realised-gain table may print the quantity negative because
                 # it is a disposal. The SELL event already says that.
-                qty = abs(G.to_number(r.get("qty")))
+                # NaN, not a silent zero, when present-but-unparseable - abs()
+                # of NaN is still NaN, so this is still an explicit check, not
+                # truthiness.
+                qty = abs(G.to_number(r.get("qty"), on_invalid="nan"))
                 acq = _row_date(r.get("acquired"), cfg)
                 sold = _row_date(r.get("sold"), cfg)
+                if qty != qty:
+                    rec.invalid_quantities.append({
+                        "role": "closed_lot_gains", "event": "SELL",
+                        "symbol": str(r.get("ticker") or symbol).strip().upper(),
+                        "broker": broker, "source": t.coords(i),
+                        "raw": repr(r.get("qty")),
+                    })
+                    continue
                 if not qty or sold is None:
                     continue
                 # NaN, not a silent zero, for either when present-but-
@@ -985,8 +1051,19 @@ def _extract_closed_lot_table(doc, profile, broker, rec):
             if row_filter and not _row_matches(r, row_filter, cols_lower):
                 continue
 
-            qty = G.to_number(r.get(cols.get("quantity")))
+            sym_early = str(r.get(cols.get("symbol"), "") or "").strip().upper() or "UNKNOWN"
+            # NaN, not a silent zero, when present-but-unparseable - a
+            # dropped disposal quantity would understate the holding with no
+            # trace, exactly like the pdf_sections closed_lot_gains role.
+            qty = G.to_number(r.get(cols.get("quantity")), on_invalid="nan")
             sold = G.to_date(r.get(cols.get("sale_date")))
+            if qty != qty:
+                rec.invalid_quantities.append({
+                    "role": "closed_lot_gains_table", "event": "SELL",
+                    "symbol": sym_early, "broker": broker, "source": t.coords(i),
+                    "raw": repr(r.get(cols.get("quantity"))),
+                })
+                continue
             if not qty or sold is None:
                 continue
             acq = G.to_date(r.get(cols.get("acquired_date"))) if cols.get("acquired_date") else None
@@ -1004,7 +1081,7 @@ def _extract_closed_lot_table(doc, profile, broker, rec):
                         if cols.get("ordinary_gain_fc") else None)
             ord_income = (G.to_number(r.get(cols.get("ordinary_income_fc")))
                           if cols.get("ordinary_income_fc") else None)
-            sym = str(r.get(cols.get("symbol"), "") or "").strip().upper() or "UNKNOWN"
+            sym = sym_early
 
             # The report's own arithmetic must hold. It is never rewritten to
             # make it hold - a break is reported and the broker's figures stand.
@@ -1085,7 +1162,29 @@ def _extract_events(doc, profile, broker, rec):
 
         c = mapping.columns
         for i, r in t.df.reset_index(drop=True).iterrows():
-            qty = G.to_number(r.get(c.get("quantity")))
+            # Classified up front (before the quantity/date gates below) purely
+            # so a malformed-quantity diagnostic can name the event/symbol it
+            # concerns - classification itself does not depend on quantity.
+            descriptor = " ".join(str(v) for v in r.values
+                                  if isinstance(v, str) and v.strip())
+            plan_type = G.classify_plan(descriptor)
+            event = _event_for(profile, descriptor, plan_type)
+            symbol = _symbol(profile, r, c, descriptor, doc.text or "")
+
+            # NaN, not a silent zero, when present-but-unparseable - this is
+            # the generic/synonym-driven fallback used for a broker with no
+            # profile (and for a profile-driven table that is neither
+            # pdf_sections nor closed_lot_gains), so a malformed quantity here
+            # would otherwise disappear with no trace for any event type this
+            # classifier can emit (VEST/BUY/SELL/TRANSFER_IN/TRANSFER_OUT/...).
+            qty = G.to_number(r.get(c.get("quantity")), on_invalid="nan")
+            if qty != qty:
+                rec.invalid_quantities.append({
+                    "role": "_extract_events", "event": event, "symbol": symbol,
+                    "broker": broker, "source": t.coords(i),
+                    "raw": repr(r.get(c.get("quantity"))),
+                })
+                continue
             if not qty:
                 continue
             date = (G.to_date(r.get(c.get("acquired_date")))
@@ -1111,15 +1210,6 @@ def _extract_events(doc, profile, broker, rec):
                 total = G.to_number(r.get(c.get("cost_total_fc")), on_invalid="nan")
                 price = (total / qty) if qty else 0.0
 
-            # Use every text cell in the row. A generic pass has no idea which
-            # column carries the plan name, so classifying on the whole row is
-            # far more reliable than guessing a descriptor column.
-            descriptor = " ".join(str(v) for v in r.values
-                                  if isinstance(v, str) and v.strip())
-            plan_type = G.classify_plan(descriptor)
-            event = _event_for(profile, descriptor, plan_type)
-
-            symbol = _symbol(profile, r, c, descriptor, doc.text or "")
             rows.append({
                 "date": date, "broker": broker, "account_no": account or "",
                 "symbol": symbol, "event": event, "quantity": qty,

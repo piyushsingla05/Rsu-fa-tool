@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ..ingest import generic as G
 from ..models import BUY, DIV, StatementData
 from .base import BrokerParser, register
 
@@ -71,8 +72,26 @@ class ComputersharePlanParser(BrokerParser):
             d = raw.iat[i, c_date]
             if pd.isna(d):
                 continue
-            qty = self._num(raw.iat[i, c_qty])
+            # NaN, not a silent zero, when present-but-unparseable - a
+            # malformed quantity must not be dropped exactly like a genuinely
+            # blank/absent cell (which is skipped below, unchanged), nor
+            # silently treated as a real zero-share event. Because the
+            # Purchase/Dividend Shares pair is emitted from this same "qty"
+            # value below, excluding the row here excludes BOTH the
+            # acquisition lot and its paired dividend income together -
+            # correct, since the true quantity is unknown - but it must never
+            # happen without a trace, hence the warning.
+            qty = self._num(raw.iat[i, c_qty], on_invalid="nan")
             price = self._num(raw.iat[i, c_price])
+            if qty != qty:
+                warnings.append(
+                    f"{path.name}, row {i + 1}: quantity "
+                    f"{raw.iat[i, c_qty]!r} is present but unparseable - this "
+                    "row (and its paired dividend income, if it is a "
+                    "Dividend Shares row) has been excluded rather than "
+                    "treated as a zero-share event. Correct the quantity in "
+                    "the source file and re-run.")
+                continue
             if not qty:
                 continue
             date = pd.Timestamp(d).date()
@@ -146,9 +165,8 @@ class ComputersharePlanParser(BrokerParser):
         return plan.split()[0].upper() if plan else "UNKNOWN"
 
     @staticmethod
-    def _num(v) -> float:
-        try:
-            f = float(v)
-            return 0.0 if pd.isna(f) else f
-        except (TypeError, ValueError):
-            return 0.0
+    def _num(v, on_invalid: str = "zero") -> float:
+        """Delegates to the engine's shared numeric parser (src/ingest/generic.py)
+        so a malformed-but-present cell can be told apart from a genuinely
+        blank one, exactly as every other ingestion path already does."""
+        return G.to_number(v, on_invalid=on_invalid)

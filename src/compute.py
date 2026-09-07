@@ -54,6 +54,23 @@ def _already_netted(lot, disposal_date) -> bool:
             and disposal_date <= (lot.stated_at or lot.acquired))
 
 
+def _qty_or_zero(r) -> float:
+    """A row's quantity for a DERIVED aggregate walk (a reconciliation total,
+    a peak-quantity disclosure sum), never for building a Lot/SaleMatch itself.
+
+    A malformed (present-but-unparseable) quantity is excluded here - treated
+    as contributing nothing to this sum - rather than left to poison the
+    whole total with NaN (NaN is truthy, so the ordinary `r["quantity"] or 0`
+    idiom does not catch it: `float("nan") or 0` is still NaN). This is safe
+    ONLY because the same row is already raised as INVALID_NUMERIC_FIELD at
+    the point its Lot/SaleMatch/SPLIT is built in build_lots() - this helper
+    never originates that diagnostic, it only stops an already-flagged NaN
+    from silently corrupting an unrelated derived figure a second time.
+    """
+    q = float(r["quantity"] or 0)
+    return q if q == q else 0.0
+
+
 def _rate_or_flag(fx: FXTable, register: Register, date: dt.date, cur: str,
                    purpose: str, subject: str, source: str) -> float:
     """fx.rate(), but an unresolved date is flagged rather than passed on mute.
@@ -238,6 +255,29 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
             all_lots.append(lot)
 
         elif kind in DISPOSING_EVENTS:
+            if qty != qty:
+                # NaN quantity - an explicit check, not truthiness, mirroring
+                # the ACQUIRING_EVENTS guard above. Without this, `remaining =
+                # qty` below would be NaN, every `remaining <= 1e-9` /
+                # `remaining > 1e-6` comparison against it is silently False
+                # (NaN comparisons are always False), so the disposal neither
+                # consumes a lot correctly nor raises MISSING_VEST_DATE - it
+                # can instead poison `lot.remaining` to NaN via `lot.remaining
+                # -= take` for every lot it touches, with no diagnostic at
+                # all. Flag it and skip the event instead - the holding stays
+                # at its last good quantity rather than being silently
+                # corrupted, and the shortfall this creates is the same kind
+                # already surfaced by MISSING_VEST_DATE for a real disposal.
+                register.blocker(
+                    INVALID_NUMERIC_FIELD, sym,
+                    f"{kind} on {r['date']:%d-%m-%Y} has an unparseable/"
+                    "invalid quantity and has been excluded rather than "
+                    "treated as zero or guessed. The holding and any capital "
+                    "gain this disposal would have matched are understated "
+                    "until this is corrected.",
+                    str(r.get("broker", "")),
+                    "Correct the quantity in the source data and re-run.")
+                continue
             # A closed-lot record carries its own acquisition date, so the match
             # is a fact, not an inference. Still consume open lots where they
             # exist so the holding stays right, but never raise a shortfall.
@@ -369,6 +409,20 @@ def build_lots(events: pd.DataFrame, register: Register, as_at=None):
             # broker's lots for the symbol, not just one - open_lots is keyed
             # by (broker, symbol), so every matching key must be visited.
             ratio = float(r["quantity"] or 1)
+            if ratio != ratio:
+                # NaN ratio - an explicit check, not truthiness ("or 1" above
+                # does not catch NaN, since NaN is truthy in Python). Applying
+                # it would silently poison quantity/remaining/price_fc with
+                # NaN for every lot of this symbol, across every broker.
+                register.blocker(
+                    INVALID_NUMERIC_FIELD, sym,
+                    f"SPLIT on {r['date']:%d-%m-%Y} has an unparseable/invalid "
+                    "ratio and has been skipped rather than applied as a "
+                    "guessed multiplier. Every lot of this security is left "
+                    "at its pre-split quantity until this is corrected.",
+                    str(r.get("broker", "")),
+                    "Correct the split ratio/quantity in the source data and re-run.")
+                continue
             for (lot_broker, lot_sym), lot_list in open_lots.items():
                 if lot_sym != sym:
                     continue
@@ -537,7 +591,7 @@ def _flag_peak_quantity(events, sym, period, register: Register) -> None:
     """
     ev = events[(events["symbol"] == sym)
                 & (events["date"] >= period.start) & (events["date"] <= period.end)]
-    disposed = sum(float(r["quantity"] or 0) for _, r in ev.iterrows()
+    disposed = sum(_qty_or_zero(r) for _, r in ev.iterrows()
                    if r["event"] in DISPOSING_EVENTS)
     if disposed > 1e-6:
         register.review(
@@ -549,7 +603,7 @@ def _flag_peak_quantity(events, sym, period, register: Register) -> None:
             "Confirm the convention is acceptable for this client, or compute the "
             "peak on the quantity actually held on the high-price date.")
 
-    acquired = sum(float(r["quantity"] or 0) for _, r in ev.iterrows()
+    acquired = sum(_qty_or_zero(r) for _, r in ev.iterrows()
                    if r["event"] in (VEST, BUY, TRANSFER_IN))
     if acquired > 1e-6:
         register.review(
@@ -639,7 +693,7 @@ def build_a2(cash, accounts, events, fx, period, register: Register):
                 if r["event"] in (DIV, SELL):
                     amt = float(r["amount_fc"] or 0)
                     if not amt and r["event"] == SELL:
-                        amt = float(r["quantity"] or 0) * float(r["price_fc"] or 0)
+                        amt = _qty_or_zero(r) * float(r["price_fc"] or 0)
                     credited += amt * _rate_or_flag(
                         fx, register, r["date"], cur, f"A2 credit {acno}",
                         label, str(r.get("notes", "") or "events"))
@@ -1035,7 +1089,7 @@ def build_reconciliation(events, lots, period: Period, register: Register):
         inside = ev[(ev["date"] >= period.start) & (ev["date"] <= period.end)]
 
         def total(kinds):
-            return sum(float(r["quantity"] or 0) for _, r in inside.iterrows()
+            return sum(_qty_or_zero(r) for _, r in inside.iterrows()
                        if r["event"] in kinds)
 
         vested = total({"VEST"})
@@ -1049,7 +1103,7 @@ def build_reconciliation(events, lots, period: Period, register: Register):
         # the shares it creates. Without one, every split security breaks.
         split_adj, running = 0.0, opening
         for _, r in inside.sort_values("date").iterrows():
-            q = float(r["quantity"] or 0)
+            q = _qty_or_zero(r)
             if r["event"] in ACQUIRING_EVENTS:
                 running += q
             elif r["event"] in DISPOSING_EVENTS:
@@ -1126,9 +1180,9 @@ def build_cross_broker(events, transfers, lots, period: Period, register: Regist
             bev = ev[ev["broker"] == b]
             if bev.empty:
                 continue
-            acq = sum(float(r["quantity"] or 0) for _, r in bev.iterrows()
+            acq = sum(_qty_or_zero(r) for _, r in bev.iterrows()
                       if r["event"] in ("VEST", "BUY"))
-            sold = sum(float(r["quantity"] or 0) for _, r in bev.iterrows()
+            sold = sum(_qty_or_zero(r) for _, r in bev.iterrows()
                        if r["event"] == SELL)
             t_in = t_out = 0.0
             if not tf.empty:
@@ -1173,7 +1227,7 @@ def _qty(ev: pd.DataFrame) -> float:
     """Quantity walk including corporate actions, in date order."""
     t = 0.0
     for _, r in ev.sort_values("date").iterrows():
-        q = float(r["quantity"] or 0)
+        q = _qty_or_zero(r)
         if r["event"] in ACQUIRING_EVENTS:
             t += q
         elif r["event"] in DISPOSING_EVENTS:
@@ -1201,7 +1255,7 @@ def _sum_proceeds(events, sym, fx, period, register: Register) -> float:
     ev = events[(events["symbol"] == sym) & (events["event"].isin(PROCEEDS_EVENTS))]
     for _, r in ev.iterrows():
         if period.start <= r["date"] <= period.end:
-            amt = float(r["amount_fc"] or 0) or float(r["quantity"] or 0) * float(r["price_fc"] or 0)
+            amt = float(r["amount_fc"] or 0) or _qty_or_zero(r) * float(r["price_fc"] or 0)
             t += amt * _rate_or_flag(
                 fx, register, r["date"], r["currency"], f"A3 sale proceeds {sym}",
                 sym, str(r.get("notes", "") or "events"))

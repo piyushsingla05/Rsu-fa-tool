@@ -130,7 +130,7 @@ PERIOD = Period(dt.date(2024, 1, 1), dt.date(2024, 12, 31))
 
 # ======================================================================
 section("1. NaN ACQUISITION QUANTITY - explicit diagnostic, no silent A3 "
-        "disappearance, reconciliation remains appropriately unresolved")
+        "disappearance, reconciliation stays consistent with build_lots()")
 
 events1 = coerced([
     ev(dt.date(2024, 1, 1), "X", "1", "AAPL", "VEST", "garbled_qty", "40.0"),
@@ -164,10 +164,21 @@ check(len(a3_1) == 1 and a3_1.iloc[0]["_qty"] == 20.0,
 from src.compute import build_reconciliation  # noqa: E402
 recon1 = build_reconciliation(events1, lots1, PERIOD, reg1)
 row1 = recon1[recon1["Symbol"] == "AAPL"].iloc[0]
-check(row1["Status"] == "BREAK",
-      "reconciliation still (correctly) shows the walk cannot balance, "
-      "since the source statement's own total no longer matches the "
-      "excluded row",
+# Prior to the malformed-quantity ingestion hardening audit,
+# build_reconciliation()'s own quantity walk had no NaN guard of its own -
+# `r["quantity"] or 0` does not catch NaN (NaN is truthy in Python), so the
+# excluded row's NaN silently propagated into `computed`, forcing a
+# coincidental BREAK. That walk now explicitly excludes the same
+# already-flagged NaN row build_lots() excluded (via the new _qty_or_zero()
+# helper - see src/compute.py), so the two independent totals agree with
+# each other again and the walk correctly stays reconciled for the shares
+# that ARE known. The malformed row is never silently lost either way - it
+# is the INVALID_NUMERIC_FIELD blocker just above, not a coincidental
+# reconciliation break, that is the actionable signal for it.
+check(row1["Status"] == "Reconciled",
+      "reconciliation is consistent with build_lots()'s own exclusion of "
+      "the NaN-quantity row, rather than coincidentally breaking on "
+      "unguarded NaN arithmetic",
       f"status={row1['Status']!r}")
 
 
